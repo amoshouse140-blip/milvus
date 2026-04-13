@@ -60,6 +60,18 @@ const (
 
 // type requery func(span trace.Span, ids *schemapb.IDs, outputFields []string) (*milvuspb.QueryResults, error)
 
+// searchTask 封装一次向量搜索请求的完整生命周期。
+// 端到端流程：
+//   PreExecute:  解析参数 → 获取 Schema → 生成查询计划 (PlanNode AST) → 序列化
+//   Execute:     通过 LBPolicy 按 VChannel 并行分发到 QueryNode → 收集结果
+//   PostExecute: 跨分片结果归并 (Reduce) → 后处理 Pipeline (重排序/高亮/Requery)
+//
+// 关键字段说明：
+//   - lb: 负载均衡策略，决定请求发给哪个 QueryNode
+//   - resultBuf: 并发安全的结果收集器，存储各 QueryNode 返回的中间结果
+//   - queryInfos: 每个子查询的 QueryInfo（topK, metric_type 等）
+//   - rerankMeta: 混合搜索 (Hybrid Search) 的重排序配置
+//   - queryChannelsTs: 每个 Channel 的 MVCC 时间戳，用于会话一致性
 type searchTask struct {
 	baseTask
 	Condition
@@ -143,6 +155,15 @@ func (t *searchTask) CanSkipAllocTimestamp() bool {
 	return consistencyLevel != commonpb.ConsistencyLevel_Strong
 }
 
+// PreExecute 搜索请求的预处理阶段。
+// 主要步骤：
+//   1. 获取 Collection 元数据和 Schema
+//   2. 解析搜索参数（metric_type, topK, nq, search_params 等）
+//   3. 通过 planparserv2.CreateSearchPlan() 将过滤表达式编译为 PlanNode AST
+//   4. 序列化查询计划为 protobuf 二进制（SerializedExprPlan）
+//   5. 解析输出字段，判断是否需要 Requery（当输出字段包含向量时）
+//   6. 对于 Hybrid Search，为每个子请求独立生成查询计划
+//   7. 确定分区裁剪（根据过滤表达式中的分区键条件）
 func (t *searchTask) PreExecute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-PreExecute")
 	defer sp.End()
@@ -153,6 +174,13 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 
 	collectionName := t.request.CollectionName
 	t.collectionName = collectionName
+	log.Ctx(ctx).Info("[TRACE-SEARCH] >>> Proxy 收到 Search 请求, PreExecute 开始",
+		zap.String("collectionName", collectionName),
+		zap.String("dbName", t.request.GetDbName()),
+		zap.Bool("isAdvanced", t.SearchRequest.IsAdvanced),
+		zap.Int("subReqCount", len(t.request.GetSubReqs())),
+		zap.Int("outputFieldCount", len(t.request.GetOutputFields())),
+	)
 	collID, err := globalMetaCache.GetCollectionID(ctx, t.request.GetDbName(), collectionName)
 	if err != nil { // err is not nil if collection not exists
 		return merr.WrapErrAsInputErrorWhen(err, merr.ErrCollectionNotFound, merr.ErrDatabaseNotFound)
@@ -895,6 +923,15 @@ func (t *searchTask) tryParsePartitionIDsFromPlan(plan *planpb.PlanNode) ([]int6
 	return nil, nil
 }
 
+// Execute 搜索请求的执行阶段。
+// 核心流程：
+//   1. 通过 LBPolicy 获取各 VChannel 的 Shard Leader（QueryNode）
+//   2. 按 VChannel 并行调用 searchShard，将请求发送给对应的 QueryNode
+//   3. 每个 QueryNode 在本地执行搜索后返回中间结果
+//   4. 所有中间结果存入 resultBuf，等待 PostExecute 归并
+//
+// LBPolicy 会根据 QueryNode 的负载（scanned bytes）动态调整请求路由。
+// 如果某个 QueryNode 失败，会自动重试到该 Channel 的其他副本。
 func (t *searchTask) Execute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-Execute")
 	defer sp.End()
@@ -902,6 +939,13 @@ func (t *searchTask) Execute(ctx context.Context) error {
 
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute search %d", t.ID()))
 	defer tr.CtxElapse(ctx, "done")
+
+	log.Info("[TRACE-SEARCH] Step2: Execute 开始, 通过负载均衡器分发到 QueryNode",
+		zap.Int64("collectionID", t.SearchRequest.CollectionID),
+		zap.String("collectionName", t.collectionName),
+		zap.Int64("nq", t.SearchRequest.GetNq()),
+		zap.Int64s("partitionIDs", t.GetPartitionIDs()),
+	)
 
 	err := t.lb.Execute(ctx, shardclient.CollectionWorkLoad{
 		Db:             t.request.GetDbName(),
@@ -952,6 +996,16 @@ func isEmbeddingListPlaceholderType(pt commonpb.PlaceholderType) bool {
 	}
 }
 
+// PostExecute 搜索请求的后处理阶段（结果归并与重排序）。
+// 核心流程：
+//   1. collectSearchResults: 从 resultBuf 收集各 QueryNode 返回的中间结果
+//   2. 创建 searchPipeline 执行后处理（包含多个阶段）：
+//      - ReduceSearchResults: 按 Score 跨分片归并 TopK 结果
+//      - Requery: 如果输出字段包含向量，回查原始向量数据
+//      - Highlight: 文本高亮处理
+//      - FunctionScore: Hybrid Search 的重排序评分
+//   3. 填充最终结果（IDs, Scores, OutputFields）
+//   4. 重构结构体字段数据格式
 func (t *searchTask) PostExecute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-PostExecute")
 	defer sp.End()
@@ -962,11 +1016,15 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 	}()
 	log := log.Ctx(ctx).With(zap.Int64("nq", t.SearchRequest.GetNq()))
 
+	log.Info("[TRACE-SEARCH] Step5: PostExecute 开始, 收集各 QueryNode 结果并归并")
 	toReduceResults, err := t.collectSearchResults(ctx)
 	if err != nil {
 		log.Warn("failed to collect search results", zap.Error(err))
 		return err
 	}
+	log.Info("[TRACE-SEARCH] Step6: 收集到搜索结果, 准备跨分片归并",
+		zap.Int("resultCount", len(toReduceResults)),
+	)
 
 	t.queryChannelsTs = make(map[string]uint64)
 	t.relatedDataSize = 0
@@ -997,11 +1055,21 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 		log.Warn("Faild to create post process pipeline")
 		return err
 	}
+	log.Info("[TRACE-SEARCH] Step7: 开始执行搜索后处理 Pipeline (归并/重排序)")
 	if t.result, t.storageCost, err = pipeline.Run(ctx, sp, toReduceResults, storageCost); err != nil {
 		return err
 	}
 	t.fillResult()
 	t.result.Results.OutputFields = t.userOutputFields
+	resultCount := 0
+	if t.result.GetResults() != nil {
+		resultCount = len(t.result.GetResults().GetScores())
+	}
+	log.Info("[TRACE-SEARCH] Step8: 搜索完成, 返回最终结果",
+		zap.Int("totalResults", resultCount),
+		zap.Int64("relatedDataSize", t.relatedDataSize),
+		zap.Bool("isTopkReduce", t.isTopkReduce),
+	)
 	reconstructStructFieldDataForSearch(t.result, t.schema.CollectionSchema)
 	t.result.CollectionName = t.request.GetCollectionName()
 

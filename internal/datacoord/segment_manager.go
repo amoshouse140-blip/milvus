@@ -640,6 +640,15 @@ func (s *SegmentManager) CleanZeroSealedSegmentsOfChannel(ctx context.Context, c
 }
 
 // tryToSealSegment applies segment & channel seal policies
+// tryToSealSegment 检查指定 Channel 上所有 Growing 段是否需要封存 (Seal)。
+// 封存策略包括（满足任一即触发）：
+//   - sealL1SegmentByCapacity: 行数达到 Segment 最大容量的指定比例
+//   - sealL1SegmentByLifetime: 段存活时间超过 SegmentMaxLifetime 阈值
+//   - sealL1SegmentByBinlogFileNumber: Binlog 文件数量超过上限
+//   - sealL1SegmentByIdleTime: 段长时间无新写入且行数超过最小封存阈值
+//   - channelSealPolicy: Channel 级别的段数量控制
+//
+// 封存后段状态从 Growing → Sealed，Sealed 段将被 SyncManager 异步 Flush 到对象存储。
 func (s *SegmentManager) tryToSealSegment(ctx context.Context, ts Timestamp, channel string) error {
 	growing, ok := s.channel2Growing.Get(channel)
 	if !ok {
@@ -660,7 +669,15 @@ func (s *SegmentManager) tryToSealSegment(ctx context.Context, ts Timestamp, cha
 		// change shouldSeal to segment seal policy logic
 		for _, policy := range s.segmentSealPolicies {
 			if shouldSeal, reason := policy.ShouldSeal(info, ts); shouldSeal {
-				log.Info("Seal Segment for policy matched", zap.Int64("segmentID", info.GetID()), zap.String("reason", reason))
+				log.Info("[TRACE-INSERT] DataCoord: Segment 触发封存策略",
+					zap.Int64("segmentID", info.GetID()),
+					zap.Int64("collectionID", info.GetCollectionID()),
+					zap.Int64("partitionID", info.GetPartitionID()),
+					zap.Int64("numOfRows", info.GetNumOfRows()),
+					zap.Int64("maxRowNum", info.GetMaxRowNum()),
+					zap.String("channel", channel),
+					zap.String("sealReason", reason),
+				)
 				if err := s.meta.SetState(ctx, id, commonpb.SegmentState_Sealed); err != nil {
 					setStateErr = err
 					return false

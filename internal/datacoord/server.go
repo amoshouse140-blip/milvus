@@ -939,6 +939,11 @@ func (s *Server) startFlushLoop(ctx context.Context) {
 // 1. check segment id is valid
 // 2. notify RootCoord segment is flushed
 // 3. change segment state to `Flushed` in meta
+// postFlush 在段完成 Flush（数据写入对象存储）后的后处理。
+// 主要职责：
+//   1. 通知索引检查器：触发索引构建（如果段需要排序先通知 statsTask，否则直接通知 buildIndex）
+//   2. 记录 Flush 指标：插入文件数、统计文件数、删除文件数
+// Flush 完成后段进入可索引状态，索引构建完成后段进入可查询状态。
 func (s *Server) postFlush(ctx context.Context, segmentID UniqueID) error {
 	log := log.Ctx(ctx)
 	segment := s.meta.GetHealthySegment(ctx, segmentID)
@@ -976,7 +981,16 @@ func (s *Server) postFlush(ctx context.Context, segmentID UniqueID) error {
 	}
 	metrics.FlushedSegmentFileNum.WithLabelValues(metrics.DeleteFileLabel).Observe(float64(deleteFileNum))
 
-	log.Info("flush segment complete", zap.Int64("id", segmentID))
+	log.Info("[TRACE-INSERT] DataCoord: postFlush 段完全 Flush 完成",
+		zap.Int64("segmentID", segmentID),
+		zap.Int64("collectionID", segment.GetCollectionID()),
+		zap.Int64("partitionID", segment.GetPartitionID()),
+		zap.Int64("numOfRows", segment.GetNumOfRows()),
+		zap.Int("insertFiles", insertFileNum),
+		zap.Int("statFiles", statFileNum),
+		zap.Int("deleteFiles", deleteFileNum),
+		zap.String("state", segment.GetState().String()),
+	)
 	return nil
 }
 

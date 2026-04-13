@@ -2746,18 +2746,26 @@ func (node *Proxy) GetIndexState(ctx context.Context, request *milvuspb.GetIndex
 	return dipt.result, nil
 }
 
-// Insert insert records into collection.
+// Insert 是向量插入的顶层入口（gRPC handler）。
+// 整体流程：
+//   1. 健康检查 & 外部集合写入检查
+//   2. 构建 insertTask，放入任务队列
+//   3. insertTask.PreExecute(): 参数验证、Schema 获取、主键分配、Partition 路由
+//   4. insertTask.Execute(): 按 PK Hash 分片到 VChannel → 打包消息 → 写入 WAL
+//   5. insertTask.PostExecute(): 无操作（直接返回）
+//   6. 返回 MutationResult（包含 IDs 和 Timestamp）
 func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) (*milvuspb.MutationResult, error) {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Insert")
 	defer sp.End()
 
+	// 【健康检查】确保 Proxy 处于 Healthy 状态
 	if err := merr.CheckHealthy(node.GetStateCode()); err != nil {
 		return &milvuspb.MutationResult{
 			Status: merr.Status(err),
 		}, nil
 	}
 
-	// Check for external collection - insert is not supported
+	// 【外部集合检查】外部集合（如通过 CDC 同步的）不允许直接写入
 	if err := checkExternalCollectionBlockedForWrite(ctx, request.GetDbName(), request.GetCollectionName(), "insert"); err != nil {
 		return &milvuspb.MutationResult{
 			Status: merr.Status(err),
@@ -2781,6 +2789,19 @@ func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) 
 		SetDatabaseName(request.GetDbName()).
 		SetCollectionName(request.GetCollectionName())
 
+	log.Info("[TRACE-INSERT] >>> Proxy 收到 Insert 请求",
+		zap.String("db", request.DbName),
+		zap.String("collection", request.CollectionName),
+		zap.String("partition", request.PartitionName),
+		zap.Uint32("numRows", request.NumRows),
+		zap.Int("fieldsDataCount", len(request.FieldsData)),
+		zap.Int("hashKeysCount", len(request.HashKeys)),
+	)
+
+	// 【构建 insertTask】将用户请求封装为内部任务对象
+	// insertMsg 使用列式数据格式 (ColumnBased)，包含所有字段数据
+	// idAllocator 用于后续 Auto-ID 主键分配
+	// chMgr 用于获取 Collection 对应的 VChannel 列表
 	it := &insertTask{
 		ctx:       ctx,
 		Condition: NewTaskCondition(ctx),

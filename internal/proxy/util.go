@@ -2401,7 +2401,20 @@ func getDefaultPartitionsInPartitionKeyMode(ctx context.Context, dbName string, 
 	return partitionNames, nil
 }
 
+// assignChannelsByPK 根据主键 Hash 值将行数据分配到不同的 VChannel。
+// 分片路由算法：
+//   1. HashPK2Channels: 对每个主键计算 Hash 值，然后对 Channel 数量取模
+//      - Int64 PK: hash = pk % numChannels
+//      - VarChar PK: hash = fnv32(pk) % numChannels
+//   2. 根据 Hash 结果将行 offset 分组到对应的 Channel
+//   3. 返回 map[channelName][]rowOffset，每个 Channel 包含属于它的行索引列表
+//
+// 这保证相同主键的数据总是路由到同一个 Channel，便于：
+//   - 段内主键去重
+//   - Delete 消息能正确路由到包含该主键数据的 Channel
+//   - 保证同一主键数据的时序一致性
 func assignChannelsByPK(pks *schemapb.IDs, channelNames []string, insertMsg *msgstream.InsertMsg) map[string][]int {
+	// 对所有主键计算 Hash 并映射到 Channel 索引
 	insertMsg.HashValues = typeutil.HashPK2Channels(pks, channelNames)
 
 	numChannels := len(channelNames)
@@ -2412,6 +2425,7 @@ func assignChannelsByPK(pks *schemapb.IDs, channelNames []string, insertMsg *msg
 	numRows := len(insertMsg.HashValues)
 	avgCapacity := (numRows / numChannels) + 1
 
+	// 按 Channel 分组行 offset
 	channel2RowOffsets := make(map[string][]int, numChannels)
 
 	for offset, channelID := range insertMsg.HashValues {

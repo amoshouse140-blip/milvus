@@ -47,10 +47,27 @@ func ReduceSearchOnQueryNode(ctx context.Context, results []*internalpb.SearchRe
 	return ReduceSearchResults(ctx, results, info)
 }
 
+// ReduceSearchResults 将多个段的搜索结果归并为一个最终结果。
+// 归并策略：
+//   1. 过滤掉空结果
+//   2. 如果只有一个有效结果，直接返回（快速路径）
+//   3. DecodeSearchResults: 将各段的二进制序列化结果反序列化为 SearchResultData
+//   4. InitSearchReducer: 根据度量类型创建归并器（不同度量的分数排序方式不同）
+//   5. ReduceSearchResultData: 对所有段的结果按 Score 做 TopK 归并排序
+//      - 对于 L2 距离：分数越小越好
+//      - 对于 IP/Cosine：分数越大越好
+//   6. EncodeSearchResultData: 将归并后的结果序列化
 func ReduceSearchResults(ctx context.Context, results []*internalpb.SearchResults, info *reduce.ResultInfo) (*internalpb.SearchResults, error) {
 	results = lo.Filter(results, func(result *internalpb.SearchResults, _ int) bool {
 		return result != nil && (result.GetSlicedBlob() != nil || result.GetResultData() != nil)
 	})
+
+	log.Ctx(ctx).Info("[TRACE-SEARCH] ReduceSearchResults: 开始归并搜索结果",
+		zap.Int("validResultCount", len(results)),
+		zap.Int64("nq", info.GetNq()),
+		zap.Int64("topK", info.GetTopK()),
+		zap.String("metricType", info.GetMetricType()),
+	)
 
 	if len(results) == 1 {
 		log.Debug("Shortcut return ReduceSearchResults", zap.Any("result info", info))

@@ -31,12 +31,22 @@ import (
 	"github.com/milvus-io/milvus/pkg/v2/util/retry"
 )
 
+// newMsgHandler 创建消息处理器，负责处理 StreamingNode 从 WAL 消费到的各种消息。
+// 这是插入数据从 WAL 到 WriteBuffer 的桥梁：
+//   - HandleCreateSegment: WAL 中的建段消息 → 在 DataCoord 注册段 + 在 WriteBuffer 中创建缓冲区
+//   - HandleFlush: 封存指定段 → 触发 SyncTask 将内存数据刷写到对象存储
+//   - HandleManualFlush: 用户手动 Flush → 封存段 + 设置 FlushTimestamp
+//   - HandleFlushAll: 封存所有段 + Flush 整个 Channel
+//   - HandleSchemaChange: Schema 变更时封存旧段
 func newMsgHandler(wbMgr writebuffer.BufferManager) *msgHandlerImpl {
 	return &msgHandlerImpl{
 		wbMgr: wbMgr,
 	}
 }
 
+// msgHandlerImpl 是消息处理器的具体实现。
+// wbMgr (BufferManager) 管理每个 VChannel 的 WriteBuffer，
+// 负责在内存中缓冲 Insert 数据并在适当时机触发 Flush。
 type msgHandlerImpl struct {
 	wbMgr writebuffer.BufferManager
 }
@@ -44,6 +54,13 @@ type msgHandlerImpl struct {
 func (impl *msgHandlerImpl) HandleCreateSegment(ctx context.Context, createSegmentMsg message.ImmutableCreateSegmentMessageV2) error {
 	vchannel := createSegmentMsg.VChannel()
 	h := createSegmentMsg.Header()
+	log.Info("[TRACE-INSERT] StreamingNode: 收到 CreateSegment 消息, 创建 Growing Segment",
+		zap.String("vchannel", vchannel),
+		zap.Int64("collectionID", h.CollectionId),
+		zap.Int64("partitionID", h.PartitionId),
+		zap.Int64("segmentID", h.SegmentId),
+		zap.String("level", h.Level.String()),
+	)
 	if err := impl.createNewGrowingSegment(ctx, vchannel, h); err != nil {
 		return err
 	}
@@ -52,20 +69,22 @@ func (impl *msgHandlerImpl) HandleCreateSegment(ctx context.Context, createSegme
 		logger.Warn("fail to create new growing segment")
 		return err
 	}
-	log.Info("create new growing segment")
+	log.Info("[TRACE-INSERT] StreamingNode: Growing Segment 创建成功",
+		zap.Int64("segmentID", h.SegmentId),
+		zap.Int64("partitionID", h.PartitionId),
+	)
 	return nil
 }
 
+// createNewGrowingSegment 在 DataCoord 注册一个新的 Growing 段。
+// L0 段跳过此步骤（L0 仅用于存储删除记录，其 binlog 上传和 flush 是一次性操作）。
+// 对于 L1 段：向 DataCoord 发送 AllocSegment RPC，使 DataCoord 跟踪该段的生命周期。
 func (impl *msgHandlerImpl) createNewGrowingSegment(ctx context.Context, vchannel string, h *message.CreateSegmentMessageHeader) error {
 	if h.Level == datapb.SegmentLevel_L0 {
-		// L0 segment should not be flushed directly, but not create than flush.
-		// the create segment operation is used to protect the binlog from garbage collection.
-		// L0 segment's binlog upload and flush operation is handled once.
-		// so we can skip the create segment operation here. (not strict promise exactly)
+		// L0 段跳过：L0 仅存删除记录，不走 Growing→Sealed→Flushed 的标准生命周期
 		return nil
 	}
-	// Transfer the pending segment into growing state.
-	// Alloc the growing segment at datacoord first.
+	// 将待定段转为 Growing 状态，先在 DataCoord 分配段元数据
 	mix, err := resource.Resource().MixCoordClient().GetWithContext(ctx)
 	if err != nil {
 		return err
@@ -91,9 +110,16 @@ func (impl *msgHandlerImpl) createNewGrowingSegment(ctx context.Context, vchanne
 
 func (impl *msgHandlerImpl) HandleFlush(flushMsg message.ImmutableFlushMessageV2) error {
 	vchannel := flushMsg.VChannel()
+	log.Info("[TRACE-INSERT] StreamingNode: 收到 Flush 消息, 开始封存 Segment",
+		zap.String("vchannel", vchannel),
+		zap.Int64("segmentID", flushMsg.Header().SegmentId),
+	)
 	if err := impl.wbMgr.SealSegments(context.Background(), vchannel, []int64{flushMsg.Header().SegmentId}); err != nil {
 		return errors.Wrap(err, "failed to seal segments")
 	}
+	log.Info("[TRACE-INSERT] StreamingNode: Segment 封存完成",
+		zap.Int64("segmentID", flushMsg.Header().SegmentId),
+	)
 	return nil
 }
 

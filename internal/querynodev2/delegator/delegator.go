@@ -277,6 +277,11 @@ func (sd *shardDelegator) modifyQueryRequest(req *querypb.QueryRequest, scope qu
 // executeSearchSubTasks is a helper that encapsulates the common pattern of
 // organizeSubTask + executeSubTasks for search operations.
 // Used by both normal search and two-stage search to reduce code duplication.
+// executeSearchSubTasks 将搜索请求组织为子任务并分发执行。
+// 子任务按 Worker (QueryNode 实例) 分组：
+//   - 本地段直接在当前 QueryNode 执行
+//   - 远程段（在其他 QueryNode 上）通过 gRPC 调用对应 Worker 的 SearchSegments
+// 每个子任务包含一组 SegmentID，Worker 在这些段上执行搜索并返回结果。
 func (sd *shardDelegator) executeSearchSubTasks(
 	ctx context.Context,
 	req *querypb.SearchRequest,
@@ -285,6 +290,7 @@ func (sd *shardDelegator) executeSearchSubTasks(
 	sealedRowCount map[int64]int64,
 ) ([]*internalpb.SearchResults, error) {
 	log := sd.getLogger(ctx)
+	// 【组织子任务】将 Sealed 和 Growing 段按 Worker 分组，生成搜索子任务列表
 	tasks, err := organizeSubTask(ctx, req, sealed, growing, sd, true, sd.modifySearchRequest)
 	if err != nil {
 		log.Warn("Search organizeSubTask failed", zap.Error(err))
@@ -370,10 +376,13 @@ func (sd *shardDelegator) search(ctx context.Context, req *querypb.SearchRequest
 	}
 	effectiveSegmentNum := optimizers.CalculateEffectiveSegmentNum(sd.queryHook, rowCounts, req.GetReq().GetTopk())
 
-	log.Debug("search segments...",
+	log.Info("[TRACE-SEARCH] Delegator: 段裁剪完成, 开始搜索",
 		zap.Int("sealedNum", sealedNum),
 		zap.Int("growingNum", len(growing)),
 		zap.Int("effectiveSegmentNum", effectiveSegmentNum),
+		zap.Int64("nq", req.GetReq().GetNq()),
+		zap.Int64("topk", req.GetReq().GetTopk()),
+		zap.String("metricType", req.GetReq().GetMetricType()),
 	)
 
 	if optimizers.ShouldUseTwoStageSearch(req, effectiveSegmentNum) {
@@ -398,7 +407,17 @@ func (sd *shardDelegator) search(ctx context.Context, req *querypb.SearchRequest
 	return sd.executeSearchSubTasks(ctx, req, sealed, growing, sealedRowCount)
 }
 
-// Search preforms search operation on shard.
+// Search 在指定 Shard (VChannel) 上执行搜索操作。
+// 这是 QueryNode 搜索的核心入口，由 Proxy 通过 gRPC 调用。
+//
+// 整体流程：
+//   1. 速度优化: 根据一致性级别决定是否等待 tSafe 时间戳
+//   2. PinReadableSegments: 获取当前可读段的快照（Sealed + Growing），并 Pin 住防止被释放
+//   3. 段裁剪 (Segment Prune): 根据分区统计信息和 PK 过滤器跳过不可能命中的段
+//   4. BM25/MinHash 特殊处理: 构建 IDF 或解析 MinHash 参数
+//   5. 两阶段搜索优化: 如果满足条件，先用粗粒度参数搜索，再用精细参数重搜索
+//   6. executeSearchSubTasks: 将搜索请求分发到本地段执行
+//   7. 返回各段的搜索结果（未归并）
 func (sd *shardDelegator) Search(ctx context.Context, req *querypb.SearchRequest) ([]*internalpb.SearchResults, error) {
 	log := sd.getLogger(ctx)
 	if err := sd.lifetime.Add(sd.IsWorking); err != nil {
@@ -453,6 +472,18 @@ func (sd *shardDelegator) Search(ctx context.Context, req *querypb.SearchRequest
 		return nil, err
 	}
 	defer sd.distribution.Unpin(version)
+
+	sealedSegCount := 0
+	for _, item := range sealed {
+		sealedSegCount += len(item.Segments)
+	}
+	log.Info("[TRACE-SEARCH] Delegator: 获取段分布, 准备搜索",
+		zap.String("vchannel", sd.vchannelName),
+		zap.Int("sealedSegments", sealedSegCount),
+		zap.Int("growingSegments", len(growing)),
+		zap.Uint64("tSafe", tSafe),
+		zap.Bool("isAdvanced", req.GetReq().GetIsAdvanced()),
+	)
 
 	if req.GetReq().GetIsAdvanced() {
 		futures := make([]*conc.Future[*internalpb.SearchResults], len(req.GetReq().GetSubReqs()))

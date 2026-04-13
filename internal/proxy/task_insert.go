@@ -21,6 +21,15 @@ import (
 	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
 )
 
+// insertTask 封装一次 Insert 请求的完整生命周期。
+// 核心流程：PreExecute（验证+主键分配） → Execute（分片+写WAL） → PostExecute（无操作）
+//
+// 关键字段说明：
+//   - insertMsg: 封装后的插入消息，包含列式数据、RowID、时间戳
+//   - idAllocator: 全局 ID 分配器，用于 Auto-ID 模式下分配主键
+//   - chMgr: Channel 管理器，维护 Collection → VChannel/PChannel 的映射
+//   - partitionKeys: 当 Collection 使用 Partition Key 时，存储分区键字段数据
+//   - collectionID: 从 MetaCache 获取的 Collection 内部 ID
 type insertTask struct {
 	baseTask
 	// req *milvuspb.InsertRequest
@@ -99,6 +108,18 @@ func (it *insertTask) OnEnqueue() error {
 	return nil
 }
 
+// PreExecute 在任务实际执行前进行参数校验和数据准备。
+// 主要步骤：
+//   1. 验证 Collection 名称合法性
+//   2. 检查请求大小不超过 maxInsertSize 限制
+//   3. 从 MetaCache 获取 CollectionID 和 Schema
+//   4. 检查 Schema 版本一致性（防止 Schema 变更导致数据不一致）
+//   5. 为所有行分配全局唯一 RowID（通过 idAllocator 批量分配）
+//   6. 为所有行设置统一时间戳（BeginTimestamp）
+//   7. 处理动态字段、结构体字段展平
+//   8. 检查主键字段数据（Auto-ID 时自动填充，非 Auto-ID 时验证用户提供的主键）
+//   9. 判断 Partition Key 模式，决定分区路由策略
+//  10. 数据合法性校验（NaN检查、溢出检查、长度检查）
 func (it *insertTask) PreExecute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Insert-PreExecute")
 	defer sp.End()
@@ -112,6 +133,10 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 
 	collectionName := it.insertMsg.CollectionName
+	log.Ctx(ctx).Info("[TRACE-INSERT] Step1: PreExecute 开始验证",
+		zap.String("collectionName", collectionName),
+		zap.Uint64("numRows", it.insertMsg.NumRows),
+	)
 	if err := validateCollectionName(collectionName); err != nil {
 		log.Ctx(ctx).Warn("valid collection name failed", zap.String("collectionName", collectionName), zap.Error(err))
 		return err
@@ -124,6 +149,8 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		return merr.WrapErrAsInputError(merr.WrapErrParameterTooLarge("insert request size exceeds maxInsertSize"))
 	}
 
+	// 【获取 Collection 元数据】从全局 MetaCache 获取 CollectionID
+	// MetaCache 缓存了 RootCoord 的元数据，避免每次请求都访问 etcd
 	collID, err := globalMetaCache.GetCollectionID(context.Background(), it.insertMsg.GetDbName(), collectionName)
 	if err != nil {
 		log.Ctx(ctx).Warn("fail to get collection id", zap.Error(err))
@@ -131,6 +158,7 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 	it.collectionID = collID
 
+	// 获取 Collection 详细信息（包含 Schema 版本等）
 	colInfo, err := globalMetaCache.GetCollectionInfo(ctx, it.insertMsg.GetDbName(), collectionName, collID)
 	if err != nil {
 		log.Ctx(ctx).Warn("fail to get collection info", zap.Error(err))
@@ -161,7 +189,9 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 
 	rowNums := uint32(it.insertMsg.NRows())
-	// set insertTask.rowIDs
+	// 【主键 ID 批量分配】通过全局 IDAllocator 为每一行分配唯一 RowID
+	// RowID 由 ClusterID + 自增序列号组成，确保集群内全局唯一
+	// 分配范围为 [rowIDBegin, rowIDEnd)，每行一个
 	var rowIDBegin UniqueID
 	var rowIDEnd UniqueID
 	tr := timerecord.NewTimeRecorder("applyPK")
@@ -177,6 +207,12 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		return AllocErr
 	}
 
+	log.Ctx(ctx).Info("[TRACE-INSERT] Step2: 主键 ID 分配完成",
+		zap.Int64("collectionID", it.collectionID),
+		zap.Int64("rowIDBegin", rowIDBegin),
+		zap.Int64("rowIDEnd", rowIDEnd),
+		zap.Uint32("rowNums", rowNums),
+	)
 	it.insertMsg.RowIDs = make([]UniqueID, rowNums)
 	for i := rowIDBegin; i < rowIDEnd; i++ {
 		offset := i - rowIDBegin
@@ -196,6 +232,8 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 	it.result.SuccIndex = sliceIndex
 
+	// 【动态字段处理】如果 Schema 开启了动态字段(EnableDynamicField)，
+	// 检查并处理 JSON 格式的动态字段数据
 	if it.schema.EnableDynamicField {
 		err = checkDynamicFieldData(it.schema, it.insertMsg)
 		if err != nil {
@@ -203,11 +241,13 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		}
 	}
 
+	// 【命名空间数据添加】为支持多租户隔离的 namespace 字段注入数据
 	err = addNamespaceData(it.schema, it.insertMsg)
 	if err != nil {
 		return err
 	}
 
+	// 【结构体字段展平】将嵌套的 Struct 类型字段展平为多个独立字段
 	err = checkAndFlattenStructFieldData(it.schema, it.insertMsg)
 	if err != nil {
 		return err
@@ -215,9 +255,10 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 
 	allFields := typeutil.GetAllFieldSchemas(it.schema)
 
-	// check primaryFieldData whether autoID is true or not
-	// set rowIDs as primary data if autoID == true
-	// TODO(dragondriver): in fact, NumRows is not trustable, we should check all input fields
+	// 【主键字段处理】
+	// Auto-ID 模式：将之前分配的 RowID 作为主键填入数据
+	// 非 Auto-ID 模式：验证用户提供的主键数据合法性
+	// 同时对主键进行 Hash，为后续 Channel 路由做准备
 	it.result.IDs, err = checkPrimaryFieldData(allFields, it.schema, it.insertMsg)
 	log := log.Ctx(ctx).With(zap.String("collectionName", collectionName))
 	if err != nil {
@@ -250,6 +291,10 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		log.Warn("check partition key mode failed", zap.String("collectionName", collectionName), zap.Error(err))
 		return err
 	}
+	log.Ctx(ctx).Info("[TRACE-INSERT] Step3: Partition Key 模式检查",
+		zap.Bool("partitionKeyMode", partitionKeyMode),
+		zap.String("collectionName", collectionName),
+	)
 	if partitionKeyMode {
 		fieldSchema, _ := typeutil.GetPartitionKeyFieldSchema(it.schema)
 		it.partitionKeys, err = getPartitionKeyFieldData(fieldSchema, it.insertMsg)
@@ -277,6 +322,11 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		}
 	}
 
+	// 【数据合法性校验】对所有字段数据执行以下检查：
+	// - NaN 检查: 浮点数不允许 NaN 值
+	// - 溢出检查: 数值不超出字段类型范围
+	// - 长度检查: varchar 不超过 max_length
+	// - 容量检查: array 类型不超过 max_capacity
 	if err := newValidateUtil(withNANCheck(), withOverflowCheck(), withMaxLenCheck(), withMaxCapCheck()).
 		Validate(it.insertMsg.GetFieldsData(), schema.schemaHelper, it.insertMsg.NRows()); err != nil {
 		return merr.WrapErrAsInputError(err)

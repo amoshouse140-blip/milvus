@@ -19,14 +19,26 @@ package proxy
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
+	"github.com/milvus-io/milvus/pkg/v2/log"
 	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
 	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
 	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
 )
 
+// genInsertMsgsByPartition 将属于同一个 (Channel, Partition) 的行数据打包为 InsertMsg。
+// 核心逻辑：
+//   1. 创建空的 InsertMsg（列式格式）
+//   2. 遍历 rowOffsets，逐行追加字段数据到 InsertMsg
+//   3. 每追加一行前检查当前消息大小，超过 MaxMessageSize 阈值时拆分为新消息
+//   4. 返回一个或多个 InsertMsg（大批量插入可能产生多个消息）
+//
+// 消息拆分机制保证单条消息不超过消息队列的最大消息限制（默认 5MB）。
+// 数据以列式 (ColumnBased) 格式组织，每个字段一列，便于后续存储和查询。
 func genInsertMsgsByPartition(ctx context.Context,
 	segmentID UniqueID,
 	partitionID UniqueID,
@@ -36,8 +48,18 @@ func genInsertMsgsByPartition(ctx context.Context,
 	insertMsg *msgstream.InsertMsg,
 ) ([]msgstream.TsMsg, error) {
 	threshold := Params.PulsarCfg.MaxMessageSize.GetAsInt()
+	log.Ctx(ctx).Info("[TRACE-INSERT] genInsertMsgsByPartition: 按分区打包消息",
+		zap.Int64("segmentID", segmentID),
+		zap.Int64("partitionID", partitionID),
+		zap.String("partitionName", partitionName),
+		zap.String("channelName", channelName),
+		zap.Int("rowOffsetCount", len(rowOffsets)),
+		zap.Int("maxMessageSize", threshold),
+	)
 
-	// create empty insert message
+	// 【创建空 InsertMsg 工厂函数】
+	// 每个 InsertMsg 对应一个 (Segment, Partition, Channel) 的数据子集
+	// FieldsData 预分配与原始消息相同数量的字段槽位（列式存储，每列一个 FieldData）
 	createInsertMsg := func(segmentID UniqueID, channelName string) *msgstream.InsertMsg {
 		insertReq := &msgpb.InsertRequest{
 			Base: commonpbutil.NewMsgBase(
@@ -78,7 +100,8 @@ func genInsertMsgsByPartition(ctx context.Context,
 			return nil, err
 		}
 
-		// if insertMsg's size is greater than the threshold, split into multiple insertMsgs
+		// 【消息拆分】当累积消息大小超过阈值时，将当前消息保存并创建新消息
+		// 这防止单条消息超过消息队列限制（Pulsar/Kafka 的 MaxMessageSize）
 		if requestSize+curRowMessageSize >= threshold && msg.NumRows > 0 {
 			repackedMsgs = append(repackedMsgs, msg)
 			msg = createInsertMsg(segmentID, channelName)
@@ -95,6 +118,13 @@ func genInsertMsgsByPartition(ctx context.Context,
 	if msg.NumRows > 0 {
 		repackedMsgs = append(repackedMsgs, msg)
 	}
+
+	log.Ctx(ctx).Info("[TRACE-INSERT] genInsertMsgsByPartition: 打包完成",
+		zap.String("channelName", channelName),
+		zap.Int64("partitionID", partitionID),
+		zap.Int("repackedMsgCount", len(repackedMsgs)),
+		zap.Int("totalRows", len(rowOffsets)),
+	)
 
 	return repackedMsgs, nil
 }

@@ -808,7 +808,14 @@ func (node *QueryNode) SearchSegments(ctx context.Context, req *querypb.SearchRe
 	return resp, nil
 }
 
-// Search performs replica search tasks.
+// Search 是 QueryNode 的搜索入口（gRPC handler）。
+// 整体流程：
+//   1. 健康检查、获取 Collection 对象
+//   2. 验证请求中只包含一个 DML Channel
+//   3. 调用 searchChannel → 获取该 Channel 的 Delegator
+//   4. Delegator.Search() 执行实际搜索（包括 Sealed + Growing 段）
+//   5. ReduceSearchOnQueryNode 归并该 Channel 下所有段的搜索结果
+//   6. 返回归并后的 SearchResults
 func (node *QueryNode) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetReq().GetCollectionID()),
@@ -816,10 +823,17 @@ func (node *QueryNode) Search(ctx context.Context, req *querypb.SearchRequest) (
 		zap.Int64("nq", req.GetReq().GetNq()),
 	)
 
-	log.Debug("Received SearchRequest",
+	log.Info("[TRACE-SEARCH] QueryNode: 收到 Search 请求",
+		zap.Int64("collectionID", req.GetReq().GetCollectionID()),
+		zap.Strings("channels", req.GetDmlChannels()),
+		zap.Int64("nq", req.GetReq().GetNq()),
+		zap.Int64("topk", req.GetReq().GetTopk()),
+		zap.String("metricType", req.GetReq().GetMetricType()),
 		zap.Int64s("segmentIDs", req.GetSegmentIDs()),
 		zap.Uint64("guaranteeTimestamp", req.GetReq().GetGuaranteeTimestamp()),
-		zap.Uint64("mvccTimestamp", req.GetReq().GetMvccTimestamp()))
+		zap.Uint64("mvccTimestamp", req.GetReq().GetMvccTimestamp()),
+		zap.Bool("isAdvanced", req.GetReq().GetIsAdvanced()),
+	)
 
 	tr := timerecord.NewTimeRecorderWithTrace(ctx, "SearchRequest")
 

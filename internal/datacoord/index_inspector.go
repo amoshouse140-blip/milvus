@@ -106,7 +106,8 @@ func (i *indexInspector) createIndexForSegmentLoop(ctx context.Context) {
 				}
 			}
 		case collectionID := <-i.notifyIndexChan:
-			log.Info("receive create index notify", zap.Int64("collectionID", collectionID))
+			log.Info("[TRACE-INDEX] DataCoord: 收到索引构建通知, 开始检查需要建索引的段",
+				zap.Int64("collectionID", collectionID))
 			isExternal := i.isExternalCollection(collectionID)
 			segments := i.meta.SelectSegments(ctx, WithCollection(collectionID), SegmentFilterFunc(func(info *SegmentInfo) bool {
 				return isFlush(info) && (!enableSortCompaction() || info.GetIsSorted() || info.GetIsSortedByNamespace() || isExternal)
@@ -146,6 +147,13 @@ func (i *indexInspector) getUnIndexTaskSegments(ctx context.Context) []*SegmentI
 	return unindexedSegments
 }
 
+// createIndexesForSegment 为指定段创建所有缺失的索引。
+// 流程：
+//   1. 检查段是否已排序（未排序则跳过，等待 Sort Compaction 完成后再建索引）
+//   2. 跳过 L0 段（L0 仅存删除记录，无需索引）
+//   3. 获取 Collection 上定义的所有索引
+//   4. 检查段上已存在的索引
+//   5. 为缺失的索引调用 createIndexForSegment 创建索引任务
 func (i *indexInspector) createIndexesForSegment(ctx context.Context, segment *SegmentInfo) error {
 	if enableSortCompaction() && !segment.GetIsSorted() && !segment.GetIsSortedByNamespace() && !i.isExternalCollection(segment.CollectionID) {
 		log.Ctx(ctx).Debug("segment is not sorted by pk, skip create indexes", zap.Int64("segmentID", segment.GetID()))
@@ -170,8 +178,22 @@ func (i *indexInspector) createIndexesForSegment(ctx context.Context, segment *S
 	return nil
 }
 
+// createIndexForSegment 为指定段和索引创建一个索引构建任务。
+// 流程：
+//   1. 分配全局唯一 BuildID
+//   2. 获取索引参数和索引类型（HNSW/IVF/DiskANN 等）
+//   3. 评估任务需要的资源槽位（根据字段数据大小和索引类型）
+//   4. 如果 Knowhere 配置启用，可能覆盖索引类型参数
+//   5. 创建 SegmentIndex 元数据并持久化
+//   6. 提交索引构建任务到全局调度器，由 DataNode 执行实际构建
 func (i *indexInspector) createIndexForSegment(ctx context.Context, segment *SegmentInfo, indexID UniqueID) error {
-	log.Info("create index for segment", zap.Int64("segmentID", segment.ID), zap.Int64("indexID", indexID))
+	log.Info("[TRACE-INDEX] DataCoord: 为段创建索引任务",
+		zap.Int64("segmentID", segment.ID),
+		zap.Int64("collectionID", segment.CollectionID),
+		zap.Int64("partitionID", segment.PartitionID),
+		zap.Int64("numOfRows", segment.NumOfRows),
+		zap.Int64("indexID", indexID),
+	)
 	buildID, err := i.allocator.AllocID(context.Background())
 	if err != nil {
 		return err

@@ -423,6 +423,14 @@ func (node *QueryNode) queryStreamSegments(ctx context.Context, req *querypb.Que
 	return nil
 }
 
+// searchChannel 在指定 Channel 上执行搜索。
+// 流程：
+//   1. 从 delegators Map 中获取该 Channel 的 ShardDelegator
+//   2. 调用 Delegator.Search() 执行实际搜索（遍历 Sealed + Growing 段）
+//   3. ReduceSearchOnQueryNode 归并该 Channel 下所有段的搜索结果
+//   4. 返回归并后的单 Channel 搜索结果
+//
+// ShardDelegator 是每个 VChannel 的代理，管理该 Channel 下所有段的分布和搜索。
 func (node *QueryNode) searchChannel(ctx context.Context, req *querypb.SearchRequest, channel string) (*internalpb.SearchResults, error) {
 	log := log.Ctx(ctx).With(
 		zap.Int64("msgID", req.GetReq().GetBase().GetMsgID()),

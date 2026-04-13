@@ -226,7 +226,10 @@ func (m *bufferManager) FlushChannel(ctx context.Context, channel string, flushT
 	return nil
 }
 
-// BufferData put data into channel write buffer.
+// BufferData 将插入和删除数据写入指定 Channel 的内存缓冲区。
+// 这是数据从 WAL 消费后在内存中暂存的环节，数据在这里按 Segment 分组缓冲。
+// 当缓冲区满足封存策略条件时（行数/大小/时间），SyncPolicy 会触发将数据 Flush 到对象存储。
+// 每个 Channel 有独立的 WriteBuffer，保证 Channel 间数据隔离。
 func (m *bufferManager) BufferData(channel string, insertData []*InsertData, deleteMsgs []*msgstream.DeleteMsg, startPos, endPos *msgpb.MsgPosition) error {
 	buf, loaded := m.buffers.Get(channel)
 	if !loaded {
@@ -234,6 +237,13 @@ func (m *bufferManager) BufferData(channel string, insertData []*InsertData, del
 			zap.String("channel", channel))
 		return merr.WrapErrChannelNotFound(channel)
 	}
+
+	log.Ctx(context.Background()).Info("[TRACE-INSERT] WriteBufferManager: 数据写入内存缓冲",
+		zap.String("channel", channel),
+		zap.Int("insertBatchCount", len(insertData)),
+		zap.Int("deleteMsgCount", len(deleteMsgs)),
+		zap.Int64("bufferMemorySize", buf.MemorySize()),
+	)
 
 	return buf.BufferData(insertData, deleteMsgs, startPos, endPos)
 }

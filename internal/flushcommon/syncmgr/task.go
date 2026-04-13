@@ -46,6 +46,18 @@ import (
 	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
 )
 
+// SyncTask 负责将内存中的 Segment 数据刷写 (Flush) 到对象存储 (MinIO/S3)。
+// 这是数据从"易失性内存缓冲"转为"持久化存储"的关键步骤。
+//
+// Flush 流程：
+//   1. 从 MetaCache 获取段信息和存储版本
+//   2. 根据存储版本选择 Writer (V2/V3/Legacy)
+//   3. Writer 将数据序列化为 Binlog 格式并上传到对象存储
+//   4. 生成的文件包括：insertBinlogs(插入数据)、statsBinlogs(统计信息)、
+//      deltaBinlog(删除记录)、bm25Binlogs(BM25 索引)、manifestPath(清单)
+//   5. 如果配置了 MetaWriter，将 binlog 路径等元数据写回 DataCoord
+//   6. 更新 MetaCache 中的段状态（完成同步、更新 Manifest 路径等）
+//   7. 如果是 Flush 操作（非普通 Sync），将段状态更新为 Flushed
 type SyncTask struct {
 	chunkManager storage.ChunkManager
 	allocator    allocator.Interface
@@ -123,6 +135,17 @@ func (t *SyncTask) Run(ctx context.Context) (err error) {
 		}
 	}()
 
+	log.Info("[TRACE-INSERT] SyncTask.Run: 开始 Flush 数据到对象存储",
+		zap.Int64("collectionID", t.collectionID),
+		zap.Int64("partitionID", t.partitionID),
+		zap.Int64("segmentID", t.segmentID),
+		zap.String("channel", t.channelName),
+		zap.String("level", t.level.String()),
+		zap.Int64("batchRows", t.batchRows),
+		zap.Bool("isFlush", t.pack.isFlush),
+		zap.Bool("isDrop", t.pack.isDrop),
+	)
+
 	segmentInfo, has := t.metacache.GetSegmentByID(t.segmentID)
 	if !has {
 		if t.pack.isDrop {
@@ -134,6 +157,11 @@ func (t *SyncTask) Run(ctx context.Context) (err error) {
 	}
 
 	columnGroups := t.getColumnGroups(segmentInfo)
+
+	log.Info("[TRACE-INSERT] SyncTask: 使用存储版本写入",
+		zap.Int64("segmentID", t.segmentID),
+		zap.Int64("storageVersion", segmentInfo.GetStorageVersion()),
+	)
 
 	switch segmentInfo.GetStorageVersion() {
 	case storage.StorageV2:
@@ -197,6 +225,26 @@ func (t *SyncTask) Run(ctx context.Context) (err error) {
 	}
 
 	t.execTime = t.tr.ElapseSpan()
+	insertBinlogCount := 0
+	for _, fb := range t.insertBinlogs {
+		insertBinlogCount += len(fb.GetBinlogs())
+	}
+	statsBinlogCount := 0
+	for _, fb := range t.statsBinlogs {
+		statsBinlogCount += len(fb.GetBinlogs())
+	}
+	deltaBinlogCount := len(t.deltaBinlog.GetBinlogs())
+	log.Info("[TRACE-INSERT] SyncTask: Flush 到对象存储完成",
+		zap.Int64("segmentID", t.segmentID),
+		zap.Int64("collectionID", t.collectionID),
+		zap.Int64("flushedSize", t.flushedSize),
+		zap.Int64("batchRows", t.batchRows),
+		zap.Int("insertBinlogFiles", insertBinlogCount),
+		zap.Int("statsBinlogFiles", statsBinlogCount),
+		zap.Int("deltaBinlogFiles", deltaBinlogCount),
+		zap.String("manifestPath", t.manifestPath),
+		zap.Duration("timeTaken", t.execTime),
+	)
 	log.Info("task done", zap.Int64("flushedSize", t.flushedSize), zap.Duration("timeTaken", t.execTime))
 
 	if !t.pack.isFlush {
