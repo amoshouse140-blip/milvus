@@ -4,11 +4,12 @@
 
 - [一、系统架构总览](#一系统架构总览)
   - [1.1 整体架构](#11-整体架构)
-  - [1.2 核心组件](#12-核心组件)
-  - [1.3 组件通信](#13-组件通信)
-  - [1.4 服务发现与会话管理](#14-服务发现与会话管理)
-  - [1.5 组件生命周期与状态机](#15-组件生命周期与状态机)
-  - [1.6 Go / C++ Core 边界与代码地图](#16-go--c-core-边界与代码地图)
+  - [1.2 写入与查询全链路架构图](#12-写入与查询全链路架构图)
+  - [1.3 核心组件](#13-核心组件)
+  - [1.4 组件通信](#14-组件通信)
+  - [1.5 服务发现与会话管理](#15-服务发现与会话管理)
+  - [1.6 组件生命周期与状态机](#16-组件生命周期与状态机)
+  - [1.7 Go / C++ Core 边界与代码地图](#17-go--c-core-边界与代码地图)
 - [二、存储层架构](#二存储层架构)
   - [2.1 存储层全景](#21-存储层全景)
   - [2.2 元数据存储 (Meta Storage)](#22-元数据存储-meta-storage)
@@ -91,9 +92,166 @@ Milvus 采用**存算分离**的分布式架构，由三类外部依赖和四层
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.2 核心组件
+### 1.2 写入与查询全链路架构图
+
+下面两张图分别展示"一条向量从插入到落盘"和"一次搜索从请求到返回"的完整数据流：
+
+#### 插入向量全链路
+
+```
+ 用户插入 3 条数据 (行式 JSON)
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  {"id":101, "embedding":[0.10,0.20,0.30,0.40]}                         │
+ │  {"id":102, "embedding":[0.40,0.10,0.20,0.30]}                         │
+ │  {"id":103, "embedding":[0.12,0.18,0.33,0.39]}                         │
+ └─────────────────────────────┬────────────────────────────────────────────┘
+                               │ gRPC (转为列式 FieldsData)
+                               ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  Proxy                                                                   │
+ │                                                                          │
+ │  ① 校验 schema · 分配 RowID · 处理 AutoID                               │
+ │  ② Hash(PK) 分片: id=101→ch0, id=102→ch1, id=103→ch0                  │
+ │  ③ 拆分成多个 InsertMsg (每个 channel 一个, 仍然列式)                    │
+ │                                                                          │
+ └──────────┬─────────────────────────────────────────┬─────────────────────┘
+            │                                         │
+            ▼                                         ▼
+ ┌─────────────────────┐                   ┌─────────────────────┐
+ │  StreamingNode (ch0) │                   │  StreamingNode (ch1) │
+ │                      │                   │                      │
+ │  WAL 持久化           │                   │  WAL 持久化           │
+ │        │             │                   │        │             │
+ │        ▼             │                   │        ▼             │
+ │  WriteBuffer         │                   │  WriteBuffer         │
+ │        │             │                   │        │             │
+ │        ▼             │                   │        ▼             │
+ │  Growing Seg 7001    │                   │  Growing Seg 7002    │
+ │  ┌───────────────┐   │                   │  ┌───────────────┐   │
+ │  │ id=[101,103]  │   │                   │  │ id=[102]      │   │
+ │  │ embed=        │   │                   │  │ embed=        │   │
+ │  │  [v0,v2]      │   │◄─── CGO ───►     │  │  [v1]         │   │
+ │  │ (C++ segcore) │   │  Insert()         │  │ (C++ segcore) │   │
+ │  └───────────────┘   │                   │  └───────────────┘   │
+ └──────────┬───────────┘                   └──────────┬───────────┘
+            │  Seal + Flush                             │
+            ▼                                           ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  Object Storage (MinIO / S3)                                             │
+ │                                                                          │
+ │  insert_log/3001/5001/7001/                                             │
+ │    ├── 100/...  (id 列 binlog)         每个字段一个文件                   │
+ │    ├── 101/...  (title 列)             不是整行 JSON                     │
+ │    ├── 102/...  (price 列)                                              │
+ │    └── 103/...  (embedding 列)  ◄──── 向量以连续 float 数组存储          │
+ │                                                                          │
+ └──────────────────────────────┬───────────────────────────────────────────┘
+                                │
+                                │  indexInspector 发现: flushed + 有 index 定义
+                                ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  DataNode (索引构建)                                                     │
+ │                                                                          │
+ │  读取 embedding 列 binlog → Knowhere build HNSW → 上传 index files      │
+ │  index/88001/1/5001/7001/{hnsw_meta, hnsw_graph, hnsw_data}            │
+ │                                                                          │
+ └──────────────────────────────┬───────────────────────────────────────────┘
+                                │
+                                ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  QueryNode (加载)                                                        │
+ │                                                                          │
+ │  下载 binlog + index files → 构建 Sealed Segment → 段可查询             │
+ │                                                                          │
+ └──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 查询向量全链路
+
+```
+ 用户搜索: q=[0.11,0.19,0.31,0.41], filter="price>10", topK=2
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  SearchRequest                                                           │
+ │    vectors: [[0.11, 0.19, 0.31, 0.41]]                                 │
+ │    filter:  "price > 10"                                                │
+ │    topK:    2                                                           │
+ │    output:  ["id", "title", "price"]                                    │
+ └─────────────────────────────┬────────────────────────────────────────────┘
+                               │ gRPC
+                               ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  Proxy                                                                   │
+ │                                                                          │
+ │  ① 解析 schema · 验证输出字段                                            │
+ │  ② 生成查询计划 PlanNode:                                               │
+ │     VectorANNS{field=103, L2, topK=2, pred: price>10}                  │
+ │  ③ 查询向量编码为 PlaceholderGroup (二进制)                              │
+ │  ④ Fan-out: 同一个 q 广播到所有 VChannel                                │
+ │     (Insert 一行只进一个 shard; Search 广播到所有 shard)                 │
+ │                                                                          │
+ └──────────┬─────────────────────────────────────────┬─────────────────────┘
+            │                                         │
+            ▼                                         ▼
+ ┌───────────────────────────┐             ┌───────────────────────────┐
+ │  QueryNode-A (ch0)        │             │  QueryNode-B (ch1)        │
+ │                            │             │                            │
+ │  Sealed Seg 7001           │             │  Sealed Seg 7002           │
+ │  Growing Segs (如有)       │             │  Growing Segs (如有)       │
+ │                            │             │                            │
+ │  ┌──────────────────────┐  │             │  ┌──────────────────────┐  │
+ │  │ C++ segcore 执行:    │  │             │  │ C++ segcore 执行:    │  │
+ │  │                      │  │             │  │                      │  │
+ │  │ 1. HNSW ANN search  │  │             │  │ 1. HNSW ANN search  │  │
+ │  │    on embedding      │  │             │  │    on embedding      │  │
+ │  │                      │  │             │  │                      │  │
+ │  │ 2. 标量过滤          │  │             │  │ 2. 标量过滤          │  │
+ │  │    price > 10        │  │             │  │    price > 10        │  │
+ │  │                      │  │             │  │                      │  │
+ │  │ 3. L0 删除过滤       │  │             │  │ 3. L0 删除过滤       │  │
+ │  └──────────────────────┘  │             │  └──────────────────────┘  │
+ │                            │             │                            │
+ │  段级结果:                  │             │  段级结果:                  │
+ │  id=101, score=0.0004      │             │  id=102, score=0.162       │
+ │  (id=103 被 price<=10 过滤) │             │                            │
+ │                            │             │                            │
+ │  ── 节点内 Reduce ──       │             │  ── 节点内 Reduce ──       │
+ │  返回: [(101, 0.0004)]     │             │  返回: [(102, 0.162)]      │
+ └──────────┬─────────────────┘             └──────────┬─────────────────┘
+            │                                          │
+            └─────────────────┬────────────────────────┘
+                              │
+                              ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │  Proxy: 跨分片 TopK Reduce                                              │
+ │                                                                          │
+ │  合并所有 shard 结果 → 全局排序 → 取 TopK                               │
+ │                                                                          │
+ │  最终结果:                                                               │
+ │  ┌─────────────────────────────────────────────────────────────────┐     │
+ │  │  rank │  id  │  score  │  title        │  price                │     │
+ │  │    1  │  101 │  0.0004 │  "red mug"    │  19.8                 │     │
+ │  │    2  │  102 │  0.162  │  "blue bottle" │  29.9                │     │
+ │  └─────────────────────────────────────────────────────────────────┘     │
+ │                                                                          │
+ │  L2 距离: 越小越相似                                                     │
+ └──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 写入 vs 查询的关键区别
+
+| 维度 | Insert | Search |
+|------|--------|--------|
+| 路由 | 一行只进一个 shard (Hash PK) | 一条查询广播到所有 shard |
+| 数据方向 | Client → Proxy → WAL → Segment → 对象存储 | Client → Proxy → QueryNode → C++ → 归并返回 |
+| 核心执行层 | Go 编排 + C++ segment insert | Go 路由 + C++ segment search |
+| 延迟瓶颈 | WAL 写入 | 向量索引搜索 + 标量过滤 |
+| 结果 | 返回 IDs + Timestamp | 返回 IDs + Scores + 输出字段 |
+
+### 1.3 核心组件
 
 #### MixCoord（混合协调器）
+
+
 
 MixCoord 是 Milvus 的统一协调器，将所有协调角色整合在一个进程中：
 
@@ -165,7 +323,7 @@ MixCoord 同时注册为以下 gRPC 服务：
 
 **关键实现**: `internal/streamingnode/server/`
 
-### 1.3 组件通信
+### 1.4 组件通信
 
 ```
 Client ──gRPC/HTTP──► Proxy ──gRPC──► MixCoord (元数据操作)
@@ -182,7 +340,7 @@ Client ──gRPC/HTTP──► Proxy ──gRPC──► MixCoord (元数据操
 - MixCoord: `internal/distributed/mixcoord/service.go`
 - 所有 gRPC 服务支持 TLS、otelgrpc 追踪、自定义认证拦截器
 
-### 1.4 服务发现与会话管理
+### 1.5 服务发现与会话管理
 
 基于 etcd 的服务发现机制。
 
@@ -209,7 +367,7 @@ type SessionRaw struct {
 3. 事件类型：`SessionAddEvent` / `SessionDelEvent` / `SessionUpdateEvent`
 4. 协调器支持 Active/Standby 选举：`ProcessActiveStandBy()` 通过 etcd 选主
 
-### 1.5 组件生命周期与状态机
+### 1.6 组件生命周期与状态机
 
 **状态定义** (`commonpb.StateCode`):
 
@@ -241,7 +399,7 @@ SIGTERM/SIGINT → cancel context → drain in-flight requests
 
 超时由 `paramtable.Get().<Component>Cfg.GracefulStopTimeout` 控制。
 
-### 1.6 Go / C++ Core 边界与代码地图
+### 1.7 Go / C++ Core 边界与代码地图
 
 Milvus 不是"全 Go"或者"全 C++"的架构，而是明显的**分层协作**：
 
@@ -794,7 +952,51 @@ type ResourceUsage struct {
                                   → Search
 ```
 
-**Insert 和 CreateIndex 是两条独立 API**，插入时不需要带索引参数。
+**Insert 和 CreateIndex 是两条完全独立的 API**，插入时不需要带索引参数。
+
+#### Insert 与 CreateIndex 的独立性
+
+这两条链路各走各的路径，互不阻塞，交汇点在 **flushed segment**：
+
+```
+        Insert 链路                              CreateIndex 链路
+            │                                         │
+            ▼                                         ▼
+  Proxy → WAL → StreamingNode              Proxy → DataCoord
+            │                                         │
+            ▼                                         ▼
+     Growing Segment                          Index 定义 (元数据)
+            │                                    保存到 metastore
+            │  Seal + Flush                          │
+            ▼                                         │
+     binlog 文件 (对象存储)                            │
+            │                                         │
+            └──────────────┬──────────────────────────┘
+                           │
+                           ▼
+              indexInspector 持续扫描:
+              "有 flushed segment" ∩ "有 index 定义"
+                           │
+                           ▼
+                  创建 build task (BuildID)
+                           │
+                           ▼
+              DataNode build → 上传 index files
+                           │
+                           ▼
+              QueryNode 加载 → 段可查询 (走索引)
+```
+
+不论谁先到都能正常工作：
+
+| 顺序 | 行为 |
+|------|------|
+| **先 Insert 后 CreateIndex** | 已 flushed segment 被 indexInspector 发现并补建索引 |
+| **先 CreateIndex 后 Insert** | 数据 flush 后 indexInspector 同样触发构建 |
+| **只 Insert 不 CreateIndex** | 数据正常存在，搜索走 brute force |
+| **只 CreateIndex 不 Insert** | Index 定义存在但无 segment 需要 build，什么都不发生 |
+
+关键代码：`internal/datacoord/index_inspector.go`，持续扫描 "有 index 定义 + 有 flushed segment" 的交集。
 
 #### 统一示例
 
@@ -953,28 +1155,291 @@ WAL 消息结构：
 
 ### 4.6 StreamingNode 消费与缓冲
 
-**WAL Flusher** (`internal/streamingnode/server/flusher/flusherimpl/wal_flusher.go:59`):
-- 从 WAL Scanner 消费消息
-- 将 Insert 消息路由到 Write Buffer Manager
-- 处理 Flush、Seal Segment、Schema 变更等控制消息
+这一节必须拆成两条链路看，否则很容易把“写入对象存储”和“写入 QueryNode 的 growing segment”混成一回事：
 
-**Write Buffer Manager** (`internal/flushcommon/writebuffer/manager.go:26`):
-数据在内存中按 Segment 粒度缓冲。
+1. **持久化主链路**：`Proxy -> WAL -> StreamingNode -> WriteBuffer -> Flush -> 对象存储`
+2. **实时可查链路**：`同一批 InsertMsg -> QueryNode -> Growing Segment -> C++ segcore`
 
-如果**刚 insert 完就立刻 search**，而此时还没 flush，数据从 **Growing Segments** 被搜索到。
+前者回答“数据最终怎么落盘”；后者回答“为什么刚 insert 完立刻 search 也能查到”。  
+**Go 到 C++ 的真正插入点在第二条链路，不在 StreamingNode 的 WriteBuffer。**
 
-#### Go 到 C++ 的真正插入点
+#### 4.6.1 持久化主链路：先分配 Segment，再写缓冲
 
-系统级 insert 的大部分步骤在 Go 中完成。但当数据要进入执行层的 growing segment 时，底层调 C++ segcore：
+**第一步：Proxy 写 WAL 时，消息里还没有最终 SegmentID**
 
-```
-Go: LocalSegment.Insert(...)
-  → s.csegment.Insert(...)                    // internal/querynodev2/segments/segment.go
-    → cSegmentImpl.Insert(...)                // internal/util/segcore/segment.go
-      → preInsert() + serialize + C.Insert()  // 写进 C++ segment
+`insertTask.Execute()` 会把请求拆成多个 `InsertMessage` 后调用：
+
+```go
+resp := streaming.WAL().AppendMessages(ctx, msgs...)
 ```
 
-C++ 侧：`internal/core/src/segcore/SegmentGrowingImpl.cpp`
+这里消息里确定的是：
+- `CollectionId`
+- `PartitionId`
+- `VChannel`
+- `Rows`
+- `FieldsData`（列式数据）
+
+但 **真正写入哪个 segment**，不是 Proxy 决定的。
+
+**第二步：StreamingNode 的 shard interceptor 给 InsertMessage 分配 Segment**
+
+入口：`internal/streamingnode/server/wal/interceptors/shard/shard_interceptor.go`
+
+核心逻辑：
+
+```text
+handleInsertMessage
+  → shardManager.AssignSegment(req)
+    → partitionManager.AssignSegment(req)
+      → segmentAllocManager.AllocRows(req)
+```
+
+如果当前 `(collection, partition, channel)` 下还没有可写的 growing segment：
+
+```text
+AssignSegment 失败（没有可写段）
+  → asyncAllocSegment()
+    → segmentAllocWorker.doOnce()
+      → WAL append CreateSegmentMessage
+```
+
+也就是说，真实顺序通常是：
+
+```text
+1. 先往 WAL 里写 CreateSegment(segment=7001)
+2. 再把 InsertMessage 重新分配到 segment=7001
+3. 最终写入的是“带真实 SegmentID 的 InsertMessage”
+```
+
+所以，**用户一条 insert 请求不会直接“自己挑中某个 segment”**；而是先按 PK hash 进 channel，再由 StreamingNode 当前的段分配器把这批行放进某个 growing segment。
+
+**第三步：Flusher / FlowGraph 消费 WAL，把数据按 Segment 缓冲到 WriteBuffer**
+
+相关代码：
+- `internal/streamingnode/server/flusher/flusherimpl/msg_handler_impl.go`
+- `internal/flushcommon/pipeline/flow_graph_write_node.go`
+- `internal/flushcommon/writebuffer/write_buffer.go`
+
+关键动作：
+
+```text
+WAL Scanner
+  → writeNode.Operate()
+    → PrepareInsert(...)
+      → 按 SegmentID 分组
+      → InsertMsg -> storage.InsertData
+    → WriteBufferManager.BufferData(...)
+```
+
+`PrepareInsert()` 的分组键就是 `msg.SegmentID`，所以这一步开始，数据已经明确落到具体 segment：
+
+```text
+Segment 7001:
+  id        = [101, 103]
+  embedding = [vec0, vec2]
+
+Segment 7002:
+  id        = [102]
+  embedding = [vec1]
+```
+
+这条链路到这里仍然是 **纯 Go 的缓冲/刷盘逻辑**，还没有调 `segcore.Insert()`。  
+后面触发 `Flush` 时，WriteBuffer 会把这些列式数据刷成 binlog 文件，4.7 会继续讲这一段。
+
+#### 4.6.2 Go 到 C++ 的真正插入点：QueryNode 回放同一批 InsertMsg
+
+如果**刚 insert 完就立刻 search**，此时数据通常还没 flush 到对象存储；之所以还能查到，是因为 QueryNode 也在消费同一条 DML channel，并把 InsertMsg 回放到自己的 growing segment。
+
+入口在 QueryNode 的 `WatchDmChannels()`：
+
+```text
+QueryNode.WatchDmChannels
+  → pipeline.ConsumeMsgStream(...)
+  → pipeline.Start()
+```
+
+QueryNode pipeline 的插入链路：
+
+```text
+filterNode
+  → insertNode.addInsertData(...)
+    → storage.TransferInsertMsgToInsertRecord(...)
+  → delegator.ProcessInsert(...)
+    → growing.Insert(...)
+      → LocalSegment.Insert(...)
+        → s.csegment.Insert(...)
+          → cSegmentImpl.Insert(...)
+            → PreInsert + marshal InsertRecord + C.Insert(...)
+              → segment_c.cpp::Insert(...)
+                → SegmentGrowingImpl::Insert(...)
+```
+
+对应代码位置：
+- QueryNode 启动消费：`internal/querynodev2/services.go`
+- QueryNode pipeline：`internal/querynodev2/pipeline/pipeline.go`
+- InsertMsg 转 `InsertRecord`：`internal/storage/utils.go`
+- QueryNode Growing 插入：`internal/querynodev2/delegator/delegator_data.go`
+- Go/C++ 桥接：`internal/querynodev2/segments/segment.go`
+- CGO 封装：`internal/util/segcore/segment.go`
+- C 入口：`internal/core/src/segcore/segment_c.cpp`
+- C++ 真正插入：`internal/core/src/segcore/SegmentGrowingImpl.cpp`
+
+这里要特别注意：
+
+- **StreamingNode 的 WriteBuffer** 负责持久化缓冲，不负责 `segcore.Insert`
+- **QueryNode 的 Growing Segment** 负责实时可查询，真正调用了 `segcore.Insert`
+- 两边消费的是**同一批 InsertMsg**，但职责不同
+
+#### 4.6.3 C++ 里到底怎么插
+
+`cSegmentImpl.Insert()` 做了两件关键事：
+
+1. `PreInsert(n)`：先向 growing segment 申请一段连续 offset，例如本批 2 行申请到 `[0, 2)`
+2. 把 `segcorepb.InsertRecord` 序列化后传给 `C.Insert()`
+
+进入 `segment_c.cpp::Insert()` 后，会反序列化 proto，然后调用：
+
+```cpp
+segment->Insert(reserved_offset,
+                size,
+                row_ids,
+                timestamps,
+                insert_record_proto.get());
+```
+
+真正的 C++ 插入逻辑在 `SegmentGrowingImpl::Insert()`，核心步骤是：
+
+1. 校验 `num_rows` 和 `InsertRecordProto` 一致
+2. 校验字段集合是否合法；如果 schema 比消息更新，会给缺失字段补空列
+3. 把 `timestamps` 写进 `insert_record_.timestamps_`
+4. 遍历每个用户字段，把列式数据写进 growing segment 内部列存结构
+5. 如果开了 interim index / text index / geometry cache，同时更新这些辅助结构
+6. 解析主键列，建立 `pk -> offset` 映射，例如 `101 -> 0`, `103 -> 1`
+7. 更新内存和资源统计，标记这段 offset 已经可见
+
+所以，“插入到 C++”不是把一行 JSON 扔进去，而是：
+
+```text
+列式 FieldData
+  + RowIDs[]
+  + Timestamps[]
+  + reserved offset
+  ↓
+写进 SegmentGrowingImpl 内部的列存数组和辅助索引
+```
+
+其中：
+- `InsertRecord.FieldsData` 里是各个业务字段的列数据
+- `RowIDs[]` 和 `Timestamps[]` 不在 `FieldsData` 里，而是单独参数传给 C++
+
+#### 4.6.4 一个完整例子：3 行数据到底怎么插进去
+
+假设用户写入 3 行：
+
+```text
+row0: id=101, embedding=vec0
+row1: id=102, embedding=vec1
+row2: id=103, embedding=vec2
+```
+
+假设 collection 有两个 vchannel：`ch0`, `ch1`。
+
+**第 1 步：Proxy 按 PK hash 分片**
+
+```text
+101 -> ch0
+102 -> ch1
+103 -> ch0
+```
+
+于是 Proxy 写 WAL 前会得到两条 InsertMessage：
+
+```text
+msgA(channel=ch0):
+  id        = [101, 103]
+  embedding = [vec0, vec2]
+  numRows   = 2
+
+msgB(channel=ch1):
+  id        = [102]
+  embedding = [vec1]
+  numRows   = 1
+```
+
+**第 2 步：StreamingNode 给它们分配 segment**
+
+假设：
+- `msgA` 被分到 `segment=7001`
+- `msgB` 被分到 `segment=7002`
+
+于是 WAL 里的有效语义变成：
+
+```text
+CreateSegment(7001, channel=ch0)
+Insert(segment=7001, rows=[101,103])
+
+CreateSegment(7002, channel=ch1)
+Insert(segment=7002, rows=[102])
+```
+
+**第 3 步：StreamingNode 按 segment 写入内存缓冲**
+
+```text
+WriteBuffer[7001]:
+  id        = [101, 103]
+  embedding = [vec0, vec2]
+
+WriteBuffer[7002]:
+  id        = [102]
+  embedding = [vec1]
+```
+
+这一步只是为了后续 flush 到 binlog。
+
+**第 4 步：QueryNode 回放到 C++ Growing Segment**
+
+QueryNode 同样消费到这两条 InsertMessage：
+
+```text
+segment 7001:
+  rowIDs     = [90001, 90003]
+  timestamps = [t, t]
+  InsertRecord.FieldsData = {id=[101,103], embedding=[vec0,vec2]}
+
+segment 7002:
+  rowIDs     = [90002]
+  timestamps = [t]
+  InsertRecord.FieldsData = {id=[102], embedding=[vec1]}
+```
+
+对 `segment 7001` 来说，C++ 内部会发生：
+
+```text
+PreInsert(2) -> reserved_offset = 0
+
+offset 0:
+  rowID     = 90001
+  ts        = t
+  pk        = 101
+  embedding = vec0
+
+offset 1:
+  rowID     = 90003
+  ts        = t
+  pk        = 103
+  embedding = vec2
+```
+
+`segment 7002` 同理，只不过它只有 1 行。
+
+结果就是：
+
+- **StreamingNode** 手里有一份“待 flush 的列式缓冲”
+- **QueryNode** 手里有一份“可立即搜索的 C++ growing segment”
+- 后续 flush 后，数据才会变成对象存储里的 binlog，再在 QueryNode 上以 sealed segment 形式加载
+
+这才是 insert 的完整端到端过程。
 
 ### 4.7 Segment 封存与 Flush
 
