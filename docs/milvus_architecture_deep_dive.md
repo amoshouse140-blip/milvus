@@ -14,6 +14,8 @@
     - [2.1.2 具体示例](#212-具体示例)
     - [2.1.3 元数据创建时序](#213-元数据创建时序)
     - [2.1.4 BuildID 和索引文件的生命周期](#214-buildid-和索引文件的生命周期)
+    - [2.1.5 五类信息并排对照表](#215-五类信息并排对照表)
+    - [2.1.6 一条完整时序：从 CreateIndex 到 QueryNode LoadIndex](#216-一条完整时序从-createindex-到-querynode-loadindex)
   - [2.2 对象存储 (Object Storage)](#22-对象存储-object-storage)
   - [2.3 消息队列 / WAL](#23-消息队列--wal)
   - [2.4 Binlog 存储格式](#24-binlog-存储格式)
@@ -786,6 +788,176 @@ IndexFilePathInfo
 那么 `BuildID` 就是：
 
 **“具体给 segment 7001 构建这套 HNSW 索引的这一轮任务编号。”**
+
+#### 2.1.5 五类信息并排对照表
+
+为了避免再把 schema、index、segment、build、文件混在一起，下面把它们并排摆出来。
+
+继续固定这个例子：
+
+```text
+collectionID = 3001
+fieldID      = 103
+segmentID    = 7001
+indexID      = 9001
+buildID      = 88001
+```
+
+##### A. 站在“存储介质”维度看
+
+| 名称 | 属于元数据还是实体文件 | 存储介质 | 是否长期存在 | 主要内容 |
+|------|------------------------|----------|-------------|---------|
+| Collection Schema | 元数据 | metastore | 是 | 字段定义、类型、维度、type params |
+| Collection Index | 元数据 | metastore | 是 | 某字段应该建什么索引 |
+| Segment Meta | 元数据 | metastore | 是 | 段状态、行数、binlog 路径、storage version |
+| SegmentIndex | 元数据 | metastore | 是 | 某段某索引的一次 build 任务及结果 |
+| 字段 binlog | 实体文件 | object storage | 是 | 原始列数据 |
+| index files | 实体文件 | object storage | 是 | 真正的索引产物 |
+
+##### B. 站在“谁生产、谁消费”维度看
+
+| 信息 | 生产者 | 消费者 | 典型用途 |
+|------|-------|-------|---------|
+| Collection Schema | RootCoord | Proxy / DataCoord / QueryNode | 告诉系统 field 103 是 FloatVector(dim=4) |
+| Collection Index | DataCoord | DataCoord | 告诉系统 field 103 要建 HNSW(L2) |
+| Segment Meta | DataCoord | DataCoord / QueryCoord / QueryNode | 告诉系统 segment 7001 已 flushed，numRows=2 |
+| SegmentIndex | DataCoord + DataNode | DataCoord / QueryNode | 告诉系统 build 88001 是否 finished、产物在哪 |
+| 字段 binlog | Flush 链路 | DataNode / QueryNode | build 索引、加载原始字段数据 |
+| index files | DataNode | QueryNode | 真正参与 Sealed Segment 搜索 |
+
+##### C. 站在“代码对象”维度看
+
+| 概念 | 代码模型 | 关键字段 |
+|------|---------|---------|
+| Collection Schema | `model.Collection` + `model.Field` | `Fields`, `TypeParams`, `DataType` |
+| Collection Index | `model.Index` | `CollectionID`, `FieldID`, `IndexID`, `IndexParams` |
+| Segment Meta | `datapb.SegmentInfo` / `datacoord.SegmentInfo` | `NumOfRows`, `State`, `StorageVersion`, `Binlogs` |
+| SegmentIndex | `model.SegmentIndex` | `BuildID`, `IndexState`, `IndexFileKeys`, `NumRows` |
+| QueryNode 加载视图 | `indexpb.IndexFilePathInfo` / `querypb.FieldIndexInfo` | `BuildID`, `IndexFilePaths`, `NumRows`, `IndexParams` |
+
+##### D. 站在“这个例子具体长什么样”维度看
+
+| 信息 | 本例中的近似内容 |
+|------|------------------|
+| Collection Schema | `embedding(fieldID=103, FloatVector, dim=4)` |
+| Collection Index | `idx_embedding_hnsw(indexID=9001, HNSW, metric=L2, M=16, efConstruction=200)` |
+| Segment Meta | `segment 7001, state=Flushed, numRows=2, storageVersion=3` |
+| SegmentIndex | `build 88001, segment=7001, index=9001, state=Finished, fileKeys=[...]` |
+| 字段 binlog | `insert_log/.../7001/103/...` |
+| index files | `index/88001/1/5001/7001/...` |
+
+##### E. 最容易误解的 5 句话
+
+1. `Collection Index` 不是索引文件，它只是“要建什么索引”的逻辑定义。
+2. `SegmentIndex` 不是 collection 级配置，它是某个 segment 的一次具体 build 结果。
+3. `field type / dim` 不在 segment meta 里，它们来自 collection schema。
+4. `index files` 不是 flush 顺手写出来的，它们是 DataNode build 完后单独上传的。
+5. QueryNode 真正加载索引时，消费的是 `IndexFilePaths`，不是 `Collection Index` 本身。
+
+#### 2.1.6 一条完整时序：从 CreateIndex 到 QueryNode LoadIndex
+
+下面用一条完整时序把“请求、元数据、对象存储、build、加载”串起来：
+
+```text
+用户
+  |
+  | 1. CreateIndex(collection=3001, field=103, index=HNSW)
+  v
+Proxy
+  |
+  | 2. 转发 indexpb.CreateIndexRequest
+  v
+DataCoord.CreateIndex
+  |
+  | 3. 读取 Collection Schema，确认 field 103 存在且是向量字段
+  | 4. 构造 model.Index(indexID=9001)
+  | 5. 广播 CreateIndexMessage
+  v
+DataCoord DDL Ack Callback
+  |
+  | 6. indexMeta.CreateIndex()
+  |    -> metastore 持久化 Collection Index
+  |
+  | 7. notifyIndexChan <- collectionID
+  v
+indexInspector
+  |
+  | 8. 找到所有 flushed segments
+  |    发现 segment 7001 符合条件
+  |
+  | 9. 为 (segment 7001, index 9001) 分配 BuildID = 88001
+  | 10. 创建 model.SegmentIndex
+  | 11. metastore 持久化 SegmentIndex
+  | 12. prepareJobRequest()
+  |     -> 从 Segment Meta 拿 NumRows / StorageVersion / binlog IDs
+  |     -> 从 Collection Schema 拿 FieldType / Dim
+  |     -> 从 Collection Index 拿 IndexParams
+  v
+DataNode indexBuildTask
+  |
+  | 13. 读取字段 binlog:
+  |     insert_log/3001/5001/7001/103/...
+  |
+  | 14. 调底层 CreateIndex(buildIndexInfo)
+  |     -> build HNSW
+  |
+  | 15. 上传 index files:
+  |     index/88001/1/5001/7001/...
+  |
+  | 16. 本地记录 fileKeys / size / state
+  v
+DataCoord QueryIndex
+  |
+  | 17. 查询 worker build 88001 状态
+  | 18. 回写 SegmentIndex:
+  |     state = Finished
+  |     fileKeys = [...]
+  |     serializedSize = ...
+  v
+QueryCoord / QueryNode
+  |
+  | 19. 需要加载 segment 7001 时，请求 GetIndexInfos
+  v
+DataCoord.GetIndexInfos
+  |
+  | 20. 根据 SegmentIndex + Collection Index
+  |     组装 IndexFilePathInfo:
+  |       BuildID = 88001
+  |       FieldID = 103
+  |       IndexFilePaths = index/88001/1/5001/7001/...
+  v
+QueryNode.LoadIndex
+  |
+  | 21. 从 object storage / DiskCache 读 index files
+  | 22. append 到本地 Sealed Segment
+  v
+后续 Search
+  |
+  | 23. segment 7001 可优先走 HNSW，而不是只靠原始向量暴力扫描
+```
+
+##### 这条时序里，每一步最依赖哪份信息
+
+| 步骤 | 依赖的核心信息 |
+|------|---------------|
+| 3 | Collection Schema |
+| 4 | Collection Index 定义（用户请求） |
+| 8 | Segment Meta |
+| 12 | Segment Meta + Collection Schema + Collection Index + 字段 binlog 路径 |
+| 13 | 字段 binlog |
+| 15 | BuildID |
+| 18 | SegmentIndex |
+| 20 | SegmentIndex + Collection Index |
+| 21 | index files |
+
+##### 用一句话把这一大段收束
+
+```text
+CreateIndex 创建的是“定义”，
+Flush 产出的是“原始数据文件”，
+BuildID 绑定的是“某个 segment 的一次具体构建任务”，
+QueryNode 最终加载的是“这次任务产出的 index files”。
+```
 
 ### 2.2 对象存储 (Object Storage)
 
