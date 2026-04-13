@@ -88,6 +88,32 @@ type queryTask struct {
 	aggregationFieldMap  *agg.AggregationFieldMap
 }
 
+// queryTask 封装一次普通 Query / Retrieve 请求的完整生命周期。
+// 端到端流程：
+//   PreExecute:  解析 collection / partition / expr / output fields → 生成 RetrieveRequest
+//   Execute:     按 shard 并发分发到 QueryNode → 收集 RetrieveResults
+//   PostExecute: 跨 shard 归并字段列数据 → 还原为最终 QueryResults
+//
+// 和 searchTask 的最大区别：
+//   - Query 不做向量相似度计算
+//   - Query 没有 score，重点是“把哪些字段值取回来”
+//
+// 示例（客户端视角）：
+//   QueryRequest{
+//     Expr:         "id in [101, 103]",
+//     OutputFields: ["id", "title", "price"],
+//   }
+//
+// QueryNode 返回后更接近：
+//   RetrieveResults{
+//     ids: [101, 103],
+//     fields_data: {
+//       id:    [101, 103],
+//       title: ["red mug", "green tea"],
+//       price: [19.8, 9.9],
+//     },
+//   }
+
 func (t *queryTask) getQueryLabel() string {
 	if label := t.RetrieveRequest.GetQueryLabel(); label != "" {
 		return label
@@ -600,6 +626,18 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	t.Base.MsgType = commonpb.MsgType_Retrieve
 	t.Base.SourceID = paramtable.GetNodeID()
 
+	// 数据形态示例：
+	//   输入（用户视角）：
+	//     expr          = "id in [101, 103]"
+	//     output_fields = ["id", "title", "price"]
+	//
+	//   PreExecute 输出（执行层视角）：
+	//     serialized_expr_plan = bytes(plan for "id in [101, 103]")
+	//     output_fields_id     = [fieldID(id), fieldID(title), fieldID(price)]
+	//     partitionIDs         = [...]
+	//
+	//   后续 QueryNode 返回时不会带 score，而是直接带字段列值。
+
 	collectionName := t.request.CollectionName
 	t.collectionName = collectionName
 
@@ -840,6 +878,14 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 }
 
 func (t *queryTask) Execute(ctx context.Context) error {
+	// Execute 阶段和 Search 类似，也会按 shard fan-out 到多个 QueryNode；
+	// 区别是发出去的是 RetrieveRequest，而不是带查询向量的 SearchRequest。
+	//
+	// 示例：
+	//   expr = "id in [101, 103]"
+	//   ch0 / QueryNode-A 可能返回 ids [101, 103]
+	//   ch1 / QueryNode-B 可能返回空结果
+	//   PostExecute 最终把所有 shard 的 fields_data 归并成一份 QueryResults 返回客户端。
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute query %d", t.ID()))
 	defer tr.CtxElapse(ctx, "done")
 	log := log.Ctx(ctx).With(zap.Int64("collection", t.GetCollectionID()),

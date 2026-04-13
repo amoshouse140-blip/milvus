@@ -38,6 +38,17 @@ import (
 //   - HandleManualFlush: 用户手动 Flush → 封存段 + 设置 FlushTimestamp
 //   - HandleFlushAll: 封存所有段 + Flush 整个 Channel
 //   - HandleSchemaChange: Schema 变更时封存旧段
+//
+// 插入链路在这里的直观理解可以是：
+//   Proxy 写 WAL 前:
+//     ch0 的 InsertMsg -> id = [101, 103]
+//     ch1 的 InsertMsg -> id = [102]
+//
+//   StreamingNode 消费 WAL 后:
+//     GrowingSegment(7001, ch0) <- [101, 103]
+//     GrowingSegment(7002, ch1) <- [102]
+//
+//   后续再由 Flush / Seal 把这些内存里的列式数据刷到对象存储。
 func newMsgHandler(wbMgr writebuffer.BufferManager) *msgHandlerImpl {
 	return &msgHandlerImpl{
 		wbMgr: wbMgr,

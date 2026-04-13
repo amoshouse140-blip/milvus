@@ -41,6 +41,7 @@
   - [5.8 Step 7: 结果归并 (Reduce)](#58-step-7-结果归并-reduce)
   - [5.9 Query（非向量查询）流程差异](#59-query非向量查询流程差异)
   - [5.10 Hybrid Search（混合搜索）流程](#510-hybrid-search混合搜索流程)
+  - [5.11 同一批数据在各层的形态变化总表](#511-同一批数据在各层的形态变化总表)
 - [六、Delete 处理与 L0 Segment](#六delete-处理与-l0-segment)
 - [七、Compaction 压缩机制](#七compaction-压缩机制)
 - [八、关键代码路径速查表](#八关键代码路径速查表)
@@ -496,6 +497,68 @@ Client
  返回 MutationResult (IDs + Timestamp)
 ```
 
+#### 统一示例：后面所有插入和查询都复用这批数据
+
+为了把“数据形态”说清楚，下面固定使用同一个集合和同一批 3 行数据。
+
+**示例 Collection Schema**:
+
+| 字段 | FieldID | 类型 | 说明 |
+|------|---------|------|------|
+| `id` | 100 | Int64 | 业务主键 |
+| `title` | 101 | VarChar | 商品标题 |
+| `price` | 102 | Float | 标量字段 |
+| `embedding` | 103 | FloatVector(dim=4) | 向量字段 |
+
+**用户脑子里通常看到的是“按行”的数据**:
+
+```json
+[
+  {"id": 101, "title": "red mug",     "price": 19.8, "embedding": [0.10, 0.20, 0.30, 0.40]},
+  {"id": 102, "title": "blue bottle", "price": 29.9, "embedding": [0.40, 0.10, 0.20, 0.30]},
+  {"id": 103, "title": "green tea",   "price":  9.9, "embedding": [0.12, 0.18, 0.33, 0.39]}
+]
+```
+
+但 Milvus 在传输和内部处理时，核心是**列式**组织，不是行式。
+
+**InsertRequest 在 gRPC / Proxy 这一层更接近下面这样**:
+
+```json
+{
+  "db_name": "demo",
+  "collection_name": "product_catalog",
+  "partition_name": "p1",
+  "num_rows": 3,
+  "fields_data": [
+    {"field_name": "id",        "type": "Int64",            "data": [101, 102, 103]},
+    {"field_name": "title",     "type": "VarChar",          "data": ["red mug", "blue bottle", "green tea"]},
+    {"field_name": "price",     "type": "Float",            "data": [19.8, 29.9, 9.9]},
+    {"field_name": "embedding", "type": "FloatVector(dim=4)", "data": [
+      0.10, 0.20, 0.30, 0.40,
+      0.40, 0.10, 0.20, 0.30,
+      0.12, 0.18, 0.33, 0.39
+    ]}
+  ]
+}
+```
+
+这里最容易看错的是：
+
+- `num_rows = 3` 表示有 3 行实体
+- `fields_data` 长度是 4，表示有 4 列字段
+- 向量字段在列式结构里通常会被展开成一个扁平数组，再配合 `dim=4` 解释
+
+#### 这批数据在整个插入链路里的核心变化
+
+先记住下面这几个变化，后面每一步只是把它展开：
+
+1. 业务侧按“行”理解数据
+2. Proxy / msgstream 按“列”处理数据
+3. 分片时按“行 offset”拆分到不同 channel
+4. Segment Flush 到对象存储后，又按“每个字段一个 binlog 文件”落盘
+5. 查询时再把这些列式数据和索引加载回来做搜索
+
 ### 4.2 Step 1: Proxy 接收请求
 
 **入口**: `internal/proxy/impl.go:2750`
@@ -530,6 +593,34 @@ type insertTask struct {
 - 处理 Auto-ID（自动主键分配）：`checkPrimaryFieldData()`
 - 校验字段数据类型、动态字段
 
+#### 进入 Proxy 后，这批数据长什么样
+
+`insertTask.insertMsg.FieldsData` 仍然是列式的：
+
+```text
+FieldData[id]        = [101, 102, 103]
+FieldData[title]     = ["red mug", "blue bottle", "green tea"]
+FieldData[price]     = [19.8, 29.9, 9.9]
+FieldData[embedding] = [
+  0.10, 0.20, 0.30, 0.40,
+  0.40, 0.10, 0.20, 0.30,
+  0.12, 0.18, 0.33, 0.39
+]
+NumRows = 3
+```
+
+如果 `id` 是用户提供的业务主键，那么用户看到的主键还是 `[101, 102, 103]`；但 Proxy 仍然会为每一行额外分配**内部 RowID**，例如：
+
+```text
+Business PKs = [101, 102, 103]
+Internal RowIDs = [90001, 90002, 90003]
+```
+
+这两个概念不要混：
+
+- `id` 是业务主键，用于去重、删除、查询返回
+- `RowID` 是系统内部行标识，用于写链路和底层存储组织
+
 ### 4.3 Step 2: 主键分配与分片路由
 
 **Hash 分片** (`internal/proxy/util.go:2404`):
@@ -551,6 +642,72 @@ func genInsertMsgsByPartition(segmentID, partitionID, ...) ([]*msgstream.InsertM
 
 - 数据按列式 (Column-Based) 组织: `msgpb.InsertRequest{Version: Version_ColumnBased}`
 - 超过消息大小阈值 (`PulsarCfg.MaxMessageSize`) 时自动分包
+
+#### 这一步最关键：一行数据只会路由到一个 Channel
+
+假设这个 Collection 有 2 个 VChannel：
+
+- `by-dev-rootcoord-dml_0v0`
+- `by-dev-rootcoord-dml_1v0`
+
+假设主键 Hash 后的结果如下：
+
+```text
+id=101 -> channel 0
+id=102 -> channel 1
+id=103 -> channel 0
+```
+
+那么按行 offset 分组结果就是：
+
+```text
+channel 0 -> rowOffsets [0, 2]
+channel 1 -> rowOffsets [1]
+```
+
+接下来原来的 1 个 `InsertRequest` 会被拆成 2 个 `InsertMsg`。
+
+**InsertMsg for channel 0**:
+
+```text
+CollectionID = 3001
+PartitionID  = 5001
+ShardName    = "by-dev-rootcoord-dml_0v0"
+NumRows      = 2
+RowIDs       = [90001, 90003]
+PrimaryKeys  = [101, 103]
+
+FieldsData:
+  id        = [101, 103]
+  title     = ["red mug", "green tea"]
+  price     = [19.8, 9.9]
+  embedding = [
+    0.10, 0.20, 0.30, 0.40,
+    0.12, 0.18, 0.33, 0.39
+  ]
+```
+
+**InsertMsg for channel 1**:
+
+```text
+CollectionID = 3001
+PartitionID  = 5001
+ShardName    = "by-dev-rootcoord-dml_1v0"
+NumRows      = 1
+RowIDs       = [90002]
+PrimaryKeys  = [102]
+
+FieldsData:
+  id        = [102]
+  title     = ["blue bottle"]
+  price     = [29.9]
+  embedding = [0.40, 0.10, 0.20, 0.30]
+```
+
+也就是说，**插入链路是“按行切分、按列存储”**：
+
+- 按行切分：哪一行去哪个 channel
+- 按列存储：每个 channel 内部还是列式 `FieldsData`
 
 ### 4.4 Step 3: 写入 WAL / 消息队列
 
@@ -575,6 +732,52 @@ resp := streaming.WAL().AppendMessages(ctx, msgs...)
 ```
 
 消息被追加到 StreamingNode 的 WAL 中，返回 `MaxTimeTick` 用于会话一致性保证。
+
+#### WAL 里的一条消息，头和 body 分别是什么
+
+继续以上面的 `channel 0` 那条消息为例，它在 WAL 里更接近下面的结构：
+
+```text
+MutableMessage
+  VChannel = "by-dev-rootcoord-dml_0v0"
+  Header = {
+    CollectionId: 3001,
+    Partitions: [
+      {
+        PartitionId: 5001,
+        Rows: 2
+      }
+    ]
+  }
+  Body = InsertRequest{
+    CollectionName: "product_catalog",
+    PartitionName:  "p1",
+    SegmentID:      0 or placeholder,
+    NumRows:        2,
+    RowIDs:         [90001, 90003],
+    FieldsData:     ...
+  }
+```
+
+这里要注意：
+
+- **Header** 更偏路由和元信息
+- **Body** 才是实际插入的数据
+- 在 streaming 场景下，某些 `SegmentID` 可能先是占位，后续再由下游链路分配/确定
+
+#### 客户端最终拿到什么
+
+插入成功后，客户端看到的返回值一般可以理解为：
+
+```text
+MutationResult
+  Status    = Success
+  IDs       = [101, 102, 103]     // 返回业务主键，不是内部 RowID
+  InsertCnt = 3
+  Timestamp = 4567890001
+```
+
+所以从业务视角看，“插入结束”发生在 **Proxy 成功把消息写入 WAL 并拿到可见时间戳** 这一刻，不等于已经 Flush 到对象存储。
 
 ### 4.5 Step 4: StreamingNode 消费与缓冲
 
@@ -609,6 +812,35 @@ type BufferManager interface {
 - `write_buffer.go` — 每个 Collection 的写缓冲
 - `insert_buffer.go` — 插入数据缓冲
 - `segment_buffer.go` — 段级别缓冲
+
+#### 写缓冲里再看一次这批数据
+
+假设 `channel 0` 当前对应的 Growing Segment 是 `7001`，`channel 1` 对应的是 `7002`，那么写缓冲里大致会变成：
+
+```text
+Growing Segment 7001 (channel 0)
+  InsertRecord:
+    num_rows = 2
+    fields_data:
+      id        = [101, 103]
+      title     = ["red mug", "green tea"]
+      price     = [19.8, 9.9]
+      embedding = [
+        0.10, 0.20, 0.30, 0.40,
+        0.12, 0.18, 0.33, 0.39
+      ]
+
+Growing Segment 7002 (channel 1)
+  InsertRecord:
+    num_rows = 1
+    fields_data:
+      id        = [102]
+      title     = ["blue bottle"]
+      price     = [29.9]
+      embedding = [0.40, 0.10, 0.20, 0.30]
+```
+
+如果你**刚 insert 完就立刻 search**，而此时还没 flush，这批数据就是从这些 **Growing Segments** 被搜索到的。
 
 ### 4.6 Step 5: Segment 封存 (Seal)
 
@@ -656,6 +888,49 @@ Growing → Sealed (SealSegments)
        → Flushing (postFlush)
        → Flushed (完成写入对象存储)
 ```
+
+#### Flush 到对象存储后，文件会长什么样
+
+假设 `segment 7001` 被 flush，那么对象存储里会看到类似路径：
+
+```text
+insert_log/3001/5001/7001/100/910001   -> id 列
+insert_log/3001/5001/7001/101/910002   -> title 列
+insert_log/3001/5001/7001/102/910003   -> price 列
+insert_log/3001/5001/7001/103/910004   -> embedding 列
+stats_log/3001/5001/7001/100/920001    -> 主键统计
+stats_log/3001/5001/7001/103/920002    -> 向量字段统计
+```
+
+这些文件里的内容仍然是**按字段分开的**，例如：
+
+```text
+Field 100 (id) binlog:
+  [101, 103]
+
+Field 101 (title) binlog:
+  ["red mug", "green tea"]
+
+Field 102 (price) binlog:
+  [19.8, 9.9]
+
+Field 103 (embedding) binlog:
+  [
+    0.10, 0.20, 0.30, 0.40,
+    0.12, 0.18, 0.33, 0.39
+  ]
+
+Stats binlog:
+  minPK = 101
+  maxPK = 103
+  rowCount = 2
+```
+
+也就是说，**落盘以后不是一个 JSON 文件一行一条记录**，而是：
+
+- 一个 Segment
+- 里面每个字段各有自己的 binlog 文件
+- QueryNode 加载时再把这些字段重新拼成可查询的段
 
 ### 4.8 Step 7: 索引构建
 
@@ -711,6 +986,50 @@ Client
 └──────────┘
 ```
 
+#### 继续复用上面的 3 条数据
+
+假设刚才那批数据已经写入成功，并且当前系统里的段分布是：
+
+```text
+channel 0 -> segment 7001 -> rows: id [101, 103]
+channel 1 -> segment 7002 -> rows: id [102]
+```
+
+下面用两个最常见的读取动作来说明：
+
+1. **向量 Search**: 给一个查询向量，找最相似的 TopK
+2. **标量 Query / Retrieve**: 不做向量相似度，只按条件把字段值拿回来
+
+#### 先看客户端 Search 请求长什么样
+
+业务上通常会写成：
+
+```json
+{
+  "db_name": "demo",
+  "collection_name": "product_catalog",
+  "partition_names": ["p1"],
+  "vectors": [[0.11, 0.19, 0.31, 0.41]],
+  "dsl": "price > 10",
+  "search_params": [
+    {"key": "anns_field",  "value": "embedding"},
+    {"key": "metric_type", "value": "L2"},
+    {"key": "topk",        "value": "2"},
+    {"key": "params",      "value": "{\"nprobe\": 16}"}
+  ],
+  "output_fields": ["id", "title", "price"],
+  "nq": 1
+}
+```
+
+这个请求的意思是：
+
+- 用 1 个查询向量 `q0 = [0.11, 0.19, 0.31, 0.41]`
+- 在 `embedding` 字段上做相似度搜索
+- 只看 `price > 10` 的数据
+- 返回最相似的前 2 条
+- 同时把 `id/title/price` 这些字段一起带回来
+
 ### 5.2 Step 1: Proxy 接收搜索请求
 
 **入口**: `internal/proxy/task_search.go:63`
@@ -733,6 +1052,41 @@ type searchTask struct {
 3. 解析搜索参数: metric_type, topK, nq, search_params
 4. 生成查询计划: `tryGeneratePlan()`
 
+#### Search 请求进入 Proxy 后，内部数据形态是什么
+
+内部 `internalpb.SearchRequest` 里，最重要的是这几个字段：
+
+```text
+collectionID         = 3001
+partitionIDs         = [5001]
+nq                   = 1
+topk                 = 2
+metricType           = "L2"
+output_fields_id     = [100, 101, 102]
+placeholder_group    = bytes(...)
+serialized_expr_plan = bytes(...)
+```
+
+其中最容易看不懂的是 `placeholder_group`。如果把它解码成人能看懂的形式，大概是：
+
+```text
+PlaceholderGroup
+  placeholders = [
+    {
+      tag: "$0",
+      type: FloatVector,
+      values: [
+        bytes([0.11, 0.19, 0.31, 0.41])
+      ]
+    }
+  ]
+```
+
+也就是说：
+
+- 外部请求里你看到的是 `vectors: [[...]]`
+- 内部真正传给执行层时，是一个二进制 `PlaceholderGroup`
+
 ### 5.3 Step 2: 表达式解析与查询计划生成
 
 **解析器**: `internal/parser/planparserv2/plan_parser_v2.go:465`
@@ -747,18 +1101,14 @@ func CreateSearchPlan(schema, exprStr, vectorField, queryInfo, ...) (*planpb.Pla
 - 输出字段列表
 - 命名空间信息
 
-**示例**: `search(vectors, filter="age > 20 AND city == 'Beijing'", topK=10)`
+**示例**: `search(q0, filter="price > 10", topK=2, anns_field="embedding")`
 ```
 PlanNode {
     Node: VectorANNS {
-        FieldID: 101,
+        FieldID: 103,
         MetricType: L2,
-        TopK: 10,
-        Predicates: BinaryExpr {
-            Op: AND,
-            Left: CompareExpr { Field: "age", Op: GT, Value: 20 },
-            Right: CompareExpr { Field: "city", Op: EQ, Value: "Beijing" }
-        }
+        TopK: 2,
+        Predicates: CompareExpr { Field: "price", Op: GT, Value: 10 }
     }
 }
 ```
@@ -784,6 +1134,29 @@ Collection 有 N 个 VChannel
   → VChannel-2 → QueryNode-A (Shard Leader)  // 一个 QN 可负责多个分片
 ```
 
+#### 和 Insert 最不一样的一点：Search 会扇出到所有相关分片
+
+插入时是：
+
+- 第 1 行去 channel 0
+- 第 2 行去 channel 1
+- 第 3 行去 channel 0
+
+但搜索时不是“查询向量只去一个 channel”，而是**同一个查询向量会 fan-out 到所有相关 channel**：
+
+```text
+q0 = [0.11, 0.19, 0.31, 0.41]
+
+Proxy fan-out:
+  q0 + 同一份 Plan -> channel 0 -> QueryNode-A
+  q0 + 同一份 Plan -> channel 1 -> QueryNode-B
+```
+
+所以可以这么对比理解：
+
+- **Insert**: 一行只进入一个 shard
+- **Search**: 一条查询会广播到所有相关 shard，再做归并
+
 ### 5.5 Step 4: QueryNode 执行搜索
 
 **RPC 处理器**: `internal/querynodev2/handlers.go`
@@ -805,6 +1178,15 @@ func SearchStreaming(ctx, mgr, searchReq, ...)  ([]*SearchResult, error)  // lin
 func searchSegments(ctx, mgr, segments, segType, searchReq) ([]*SearchResult, error)
 // 使用 errgroup 对每个 segment 并行调用 s.Search(ctx, searchReq)
 ```
+
+#### 刚插入完立刻查，和 Flush 之后再查，命中的段类型可能不同
+
+同一批数据会出现在两种不同位置：
+
+- **刚插入后立即查**: 通常命中 `Growing Segments`，走 `SearchStreaming`
+- **Flush + Load 完成后再查**: 通常命中 `Sealed Segments`，走 `SearchHistorical`
+
+但是对用户来说，返回的业务结果应该保持一致；差别主要在内部数据来源不同。
 
 ### 5.6 Step 5: 段数据加载（缓存未命中）
 
@@ -888,6 +1270,57 @@ func ReduceSearchResults(ctx, results, info) (*internalpb.SearchResults, error)
 - 按 Score 全局排序，取 TopK
 - PostExecute 中执行后处理管线
 
+#### 用刚才那条查询，看看各层结果长什么样
+
+查询条件：
+
+- 查询向量: `q0 = [0.11, 0.19, 0.31, 0.41]`
+- 过滤条件: `price > 10`
+- `topK = 2`
+
+那么各个 shard 可能返回：
+
+```text
+QueryNode-A / segment 7001
+  原始候选:
+    id=101, score=0.0004
+    id=103, score=0.0022
+  过滤后(price > 10):
+    id=101, score=0.0004
+
+QueryNode-B / segment 7002
+  原始候选:
+    id=102, score=0.1620
+  过滤后(price > 10):
+    id=102, score=0.1620
+```
+
+QueryNode 内部归并后，给 Proxy 的 `SearchResultData` 可以近似理解成：
+
+```text
+SearchResultData
+  num_queries = 1
+  topks       = [2]
+  ids         = [101, 102]
+  scores      = [0.0004, 0.1620]
+  fields_data:
+    title = ["red mug", "blue bottle"]
+    price = [19.8, 29.9]
+```
+
+最后客户端拿到的结果可以理解成：
+
+```json
+{
+  "results": [
+    {"id": 101, "score": 0.0004, "title": "red mug", "price": 19.8},
+    {"id": 102, "score": 0.1620, "title": "blue bottle", "price": 29.9}
+  ]
+}
+```
+
+如果度量类型是 `L2`，一般是**分数越小越相似**；如果是 `IP` / `COSINE`，解释方式会不同。
+
 ### 5.9 Query（非向量查询）流程差异
 
 **入口**: `internal/proxy/task_query.go:54`
@@ -907,6 +1340,46 @@ type queryTask struct {
 - 返回格式: `segcorepb.RetrieveResults`（字段值而非 Score）
 - 支持 GROUP BY + ORDER BY 聚合
 
+#### Query 请求和返回长什么样
+
+如果现在不是做向量 Search，而是做普通 Query：
+
+```json
+{
+  "db_name": "demo",
+  "collection_name": "product_catalog",
+  "expr": "id in [101, 103]",
+  "output_fields": ["id", "title", "price"]
+}
+```
+
+那么内部会更接近：
+
+```text
+RetrieveRequest
+  collectionID         = 3001
+  partitionIDs         = [5001]
+  serialized_expr_plan = bytes(plan for "id in [101, 103]")
+  output_fields_id     = [100, 101, 102]
+  limit                = 2
+```
+
+返回结果不再有向量分数，而是直接把字段值取回来：
+
+```text
+RetrieveResults
+  ids = [101, 103]
+  fields_data:
+    id    = [101, 103]
+    title = ["red mug", "green tea"]
+    price = [19.8, 9.9]
+```
+
+所以要把这两种结果分清：
+
+- `SearchResults`: 重点是 `ids + score + 可选输出字段`
+- `RetrieveResults`: 重点是 `ids + fields_data`，没有相似度分数
+
 ### 5.10 Hybrid Search（混合搜索）流程
 
 **入口**: `internal/proxy/task_search.go:414`
@@ -924,6 +1397,29 @@ func (t *searchTask) initAdvancedSearchRequest()
    - 支持按子向量的权重贡献进行聚合
 
 **Rerank 元数据**: `rerankMeta` 接口 (`internal/proxy/rerank_meta.go`) 持有 FunctionScore 配置。
+
+### 5.11 同一批数据在各层的形态变化总表
+
+下面这张表把“同一批数据”从写入到查询的形态连起来：
+
+| 阶段 | 结构 | 本例中长什么样 |
+|------|------|----------------|
+| 业务侧 | 行式对象 | `{"id":101,"title":"red mug","price":19.8,"embedding":[...]}` |
+| Insert 请求 | `milvuspb.InsertRequest` | `num_rows=3`, `fields_data` 是 4 列 |
+| Proxy 内部 | `msgstream.InsertMsg` | 额外带上 `RowIDs=[90001,90002,90003]` |
+| 分片后 | 多个 `InsertMsg` | channel 0 保存 `[101,103]`，channel 1 保存 `[102]` |
+| WAL | `MutableMessage(Header + Body)` | header 记录 collection/partition，body 记录真正字段数据 |
+| Growing 段 | `InsertRecord` | 仍然是列式字段数组，但已经按 segment 分开缓存 |
+| Flush 后 | `insert_log/stats_log/...` | 每个字段一个 binlog 文件，不是整行 JSON |
+| Search 请求 | `internalpb.SearchRequest` | 查询向量被编码到 `placeholder_group` |
+| Query 请求 | `internalpb.RetrieveRequest` | 没有查询向量，只有表达式 plan 和输出字段 |
+| QueryNode 段结果 | `SearchResultData` / `RetrieveResults` | 先是段级局部结果，再节点级归并 |
+| Proxy 最终结果 | `milvuspb.SearchResults` / Query 返回 | Search 给 `ids + score`，Query 给 `ids + fields` |
+
+如果只记一句话，可以记这个：
+
+- **写入**: 行式业务数据 -> 列式字段数据 -> 按行分片 -> 按字段落盘
+- **查询**: 查询向量/表达式 -> 广播到各 shard -> 段级执行 -> 分层归并 -> 返回业务结果
 
 ---
 

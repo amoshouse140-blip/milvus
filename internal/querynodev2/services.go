@@ -816,6 +816,19 @@ func (node *QueryNode) SearchSegments(ctx context.Context, req *querypb.SearchRe
 //   4. Delegator.Search() 执行实际搜索（包括 Sealed + Growing 段）
 //   5. ReduceSearchOnQueryNode 归并该 Channel 下所有段的搜索结果
 //   6. 返回归并后的 SearchResults
+//
+// 示例：
+//   Proxy fan-out 过来的请求通常已经固定到了一个 channel，例如：
+//     channel = "ch0"
+//     query vector = [0.11, 0.19, 0.31, 0.41]
+//     plan = search embedding with filter "price > 10"
+//
+//   QueryNode 这层会继续把同一个 channel 下的多个 segment 结果归并：
+//     segment 7001 -> local topK = [101]
+//     segment 7005 -> local topK = [108]
+//     Reduce 后    -> channel-level topK = [101, 108]
+//
+//   然后再把这个 channel 级结果返回给 Proxy，等待跨 channel 的全局归并。
 func (node *QueryNode) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetReq().GetCollectionID()),

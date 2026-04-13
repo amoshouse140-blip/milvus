@@ -131,6 +131,11 @@ func searchSegments(ctx context.Context, mgr *Manager, segments []Segment, segTy
 // Sealed 段的数据来自对象存储 (MinIO/S3)，已完成 Flush 和索引构建。
 // 数据加载路径：对象存储 → DiskCache（本地磁盘缓存） → 内存/Mmap
 // 如果数据已在缓存中则直接使用，否则先从对象存储下载。
+//
+// 示例：
+//   之前 flush 后对象存储里已有：
+//     segment 7001 -> id [101, 103]
+//   那么 SearchHistorical 负责把这类“已经持久化的历史段”拿出来搜索。
 func SearchHistorical(ctx context.Context, manager *Manager, searchReq *SearchRequest, collID int64, partIDs []int64, segIDs []int64) ([]*SearchResult, []Segment, error) {
 	if ctx.Err() != nil {
 		return nil, nil, ctx.Err()
@@ -162,6 +167,15 @@ func SearchHistorical(ctx context.Context, manager *Manager, searchReq *SearchRe
 // Growing 段的数据来自 WAL 的实时消费，驻留在内存中，尚未 Flush 到对象存储。
 // Growing 段通常没有向量索引，搜索使用暴力扫描 (brute force)。
 // Growing 段保证了插入后的数据能被立即搜索到（实时性保证）。
+//
+// 示例：
+//   用户刚插入：
+//     [101, 102, 103]
+//   但还没 flush，此时它们可能只存在于内存里的 Growing Segments：
+//     growing seg 8001 -> [101, 103]
+//     growing seg 8002 -> [102]
+//
+//   SearchStreaming 就是负责搜这部分“刚写入、还没落对象存储”的实时数据。
 func SearchStreaming(ctx context.Context, manager *Manager, searchReq *SearchRequest, collID int64, partIDs []int64, segIDs []int64) ([]*SearchResult, []Segment, error) {
 	if ctx.Err() != nil {
 		return nil, nil, ctx.Err()

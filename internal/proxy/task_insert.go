@@ -120,6 +120,19 @@ func (it *insertTask) OnEnqueue() error {
 //   8. 检查主键字段数据（Auto-ID 时自动填充，非 Auto-ID 时验证用户提供的主键）
 //   9. 判断 Partition Key 模式，决定分区路由策略
 //  10. 数据合法性校验（NaN检查、溢出检查、长度检查）
+//
+// 数据形态示例：
+//   输入（列式）：
+//     FieldsData["id"]    = [101, 102, 103]
+//     FieldsData["title"] = ["red mug", "blue bottle", "green tea"]
+//     NumRows             = 3
+//
+//   PreExecute 结束后会额外准备好：
+//     RowIDs     = [90001, 90002, 90003]   // 系统内部行 ID
+//     Timestamps = [ts, ts, ts]            // 同一批次统一时间戳
+//     IDs        = [101, 102, 103]         // 业务主键（写到 result 里，供返回客户端）
+//
+// 重点：这里仍然没有“按 shard 分裂”；数据还是同一个 InsertMsg，只是已经具备后续分片写 WAL 的全部信息。
 func (it *insertTask) PreExecute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Insert-PreExecute")
 	defer sp.End()

@@ -126,6 +126,19 @@ func (t *SyncTask) HandleError(err error) {
 }
 
 func (t *SyncTask) Run(ctx context.Context) (err error) {
+	// Flush 阶段的数据形态示例：
+	//   输入（内存里的 Growing/Sealed Segment 数据）：
+	//     id    = [101, 103]
+	//     title = ["red mug", "green tea"]
+	//     price = [19.8, 9.9]
+	//
+	//   输出（对象存储里的文件）：
+	//     insert_log/.../field(id)        -> [101, 103]
+	//     insert_log/.../field(title)     -> ["red mug", "green tea"]
+	//     insert_log/.../field(price)     -> [19.8, 9.9]
+	//     stats_log/...                   -> min/max PK, rowCount 等统计信息
+	//
+	// 重点：Flush 后仍然不是“整行 JSON 文件”，而是“每个字段单独一个 binlog 文件”。
 	t.tr = timerecord.NewTimeRecorder("syncTask")
 
 	log := t.getLogger()

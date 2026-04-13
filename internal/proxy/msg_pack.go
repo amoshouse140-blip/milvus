@@ -39,6 +39,22 @@ import (
 //
 // 消息拆分机制保证单条消息不超过消息队列的最大消息限制（默认 5MB）。
 // 数据以列式 (ColumnBased) 格式组织，每个字段一列，便于后续存储和查询。
+//
+// 示例：
+//   原始 batch:
+//     id    = [101, 102, 103]
+//     title = ["red mug", "blue bottle", "green tea"]
+//     price = [19.8, 29.9, 9.9]
+//
+//   如果当前 channel 只拿到 rowOffsets = [0, 2]，那么打包后的 InsertMsg 会变成：
+//     NumRows = 2
+//     id      = [101, 103]
+//     title   = ["red mug", "green tea"]
+//     price   = [19.8, 9.9]
+//
+//   注意：
+//   - rowOffsets 决定“挑哪几行”
+//   - 但最终消息依旧是列式 FieldData，而不是重新拼成一行一行的 JSON
 func genInsertMsgsByPartition(ctx context.Context,
 	segmentID UniqueID,
 	partitionID UniqueID,

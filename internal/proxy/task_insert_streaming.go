@@ -31,6 +31,24 @@ import (
 //   每个 Collection 有 N 个 VChannel，数据通过 PK Hash % N 分配到不同 Channel。
 //   每个 VChannel 对应一个 StreamingNode 上的 WAL 实例。
 //   这种设计保证相同主键的数据总是落在同一个 Channel 上，便于后续去重和一致性维护。
+//
+// 路由示例：
+//   假设当前 batch 的业务主键是 [101, 102, 103]
+//   假设 Collection 有两个 VChannel: ["ch0", "ch1"]
+//   经过 Hash 后：
+//     101 -> ch0
+//     102 -> ch1
+//     103 -> ch0
+//
+//   那么 Execute 里的核心动作就是：
+//     1. 按“行 offset”切分：
+//        ch0 <- rows[0], rows[2]
+//        ch1 <- rows[1]
+//     2. 每个 channel 内部仍保持列式：
+//        ch0 的 id 列    = [101, 103]
+//        ch0 的 title 列 = ["red mug", "green tea"]
+//        ch1 的 id 列    = [102]
+//     3. 将这些分片后的列式消息写入各自 WAL
 func (it *insertTask) Execute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Insert-Execute")
 	defer sp.End()
@@ -120,6 +138,22 @@ func (it *insertTask) Execute(ctx context.Context) error {
 //   2. 按 Channel 分组后，调用 genInsertMsgsByPartition 打包为 InsertMsg
 //   3. 每个 InsertMsg 封装为 streaming Message，附加 VChannel 和 Partition 元信息
 //   4. 如果单个 Message 过大（超过 MaxMessageSize），会被拆分成多个小 Message
+//
+// 示例：
+//   原始 batch:
+//     id    = [101, 102, 103]
+//     title = ["red mug", "blue bottle", "green tea"]
+//
+//   分片后:
+//     channel "ch0" -> rowOffsets [0, 2]
+//       id    = [101, 103]
+//       title = ["red mug", "green tea"]
+//
+//     channel "ch1" -> rowOffsets [1]
+//       id    = [102]
+//       title = ["blue bottle"]
+//
+// 也就是说：分片是按“行”切，存储仍是按“列”存。
 func repackInsertDataForStreamingService(
 	ctx context.Context,
 	channelNames []string,

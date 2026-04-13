@@ -66,6 +66,28 @@ const (
 //   Execute:     通过 LBPolicy 按 VChannel 并行分发到 QueryNode → 收集结果
 //   PostExecute: 跨分片结果归并 (Reduce) → 后处理 Pipeline (重排序/高亮/Requery)
 //
+// 示例（客户端视角）：
+//   SearchRequest{
+//     Vectors:      [[0.11, 0.19, 0.31, 0.41]],
+//     Dsl:          "price > 10",
+//     OutputFields: ["id", "title", "price"],
+//     SearchParams: {"anns_field":"embedding", "metric_type":"L2", "topk":"2"},
+//   }
+//
+// 进入 Proxy 后，最关键的内部形态会变成：
+//   placeholder_group    = bytes(...)   // 查询向量被编码到 PlaceholderGroup
+//   serialized_expr_plan = bytes(...)   // 过滤条件和向量检索计划被编译成 protobuf
+//
+// 最终客户端拿到的大致是：
+//   SearchResults{
+//     ids:    [101, 102],
+//     scores: [0.0004, 0.1620],
+//     fields: {
+//       title: ["red mug", "blue bottle"],
+//       price: [19.8, 29.9],
+//     },
+//   }
+//
 // 关键字段说明：
 //   - lb: 负载均衡策略，决定请求发给哪个 QueryNode
 //   - resultBuf: 并发安全的结果收集器，存储各 QueryNode 返回的中间结果
@@ -164,6 +186,17 @@ func (t *searchTask) CanSkipAllocTimestamp() bool {
 //   5. 解析输出字段，判断是否需要 Requery（当输出字段包含向量时）
 //   6. 对于 Hybrid Search，为每个子请求独立生成查询计划
 //   7. 确定分区裁剪（根据过滤表达式中的分区键条件）
+//
+// 数据形态示例：
+//   输入（用户好理解的形式）：
+//     vectors = [[0.11, 0.19, 0.31, 0.41]]
+//     filter  = "price > 10"
+//     topK    = 2
+//
+//   PreExecute 之后（执行层更容易消费的形式）：
+//     placeholder_group    = PlaceholderGroup{tag:"$0", values:[bytes(vector)]}
+//     serialized_expr_plan = PlanNode(VectorANNS on field "embedding", predicate "price > 10")
+//     output_fields_id     = [id, title, price]
 func (t *searchTask) PreExecute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-PreExecute")
 	defer sp.End()
@@ -932,6 +965,17 @@ func (t *searchTask) tryParsePartitionIDsFromPlan(plan *planpb.PlanNode) ([]int6
 //
 // LBPolicy 会根据 QueryNode 的负载（scanned bytes）动态调整请求路由。
 // 如果某个 QueryNode 失败，会自动重试到该 Channel 的其他副本。
+//
+// 扇出示例：
+//   插入时 3 行数据可能被写到了两个 channel：
+//     ch0 <- ids [101, 103]
+//     ch1 <- ids [102]
+//
+//   搜索时同一个查询向量不会只查一个 channel，而是会广播到所有相关 channel：
+//     q0 + plan -> ch0 -> QueryNode-A
+//     q0 + plan -> ch1 -> QueryNode-B
+//
+//   然后 QueryNode-A / B 各自返回局部 TopK，最终再由 Proxy 做全局归并。
 func (t *searchTask) Execute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-Execute")
 	defer sp.End()

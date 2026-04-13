@@ -60,6 +60,7 @@ Coordinators manage metadata and scheduling; nodes execute work.
 - MixCoord: hybrid coordinator combining multiple coord roles
 - All component interfaces defined in `internal/types/types.go`
 - Entry point: `cmd/`
+- Quick code-oriented architecture map: `docs/project_architecture_overview.md`
 
 ## Code Conventions
 

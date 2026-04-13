@@ -2754,6 +2754,31 @@ func (node *Proxy) GetIndexState(ctx context.Context, request *milvuspb.GetIndex
 //   4. insertTask.Execute(): 按 PK Hash 分片到 VChannel → 打包消息 → 写入 WAL
 //   5. insertTask.PostExecute(): 无操作（直接返回）
 //   6. 返回 MutationResult（包含 IDs 和 Timestamp）
+//
+// 示例（用户视角，按“行”理解）：
+//   rows = [
+//     {"id": 101, "title": "red mug",     "price": 19.8, "embedding": [0.10, 0.20, 0.30, 0.40]},
+//     {"id": 102, "title": "blue bottle", "price": 29.9, "embedding": [0.40, 0.10, 0.20, 0.30]},
+//     {"id": 103, "title": "green tea",   "price":  9.9, "embedding": [0.12, 0.18, 0.33, 0.39]},
+//   ]
+//
+// 但真正进入 Proxy 的 InsertRequest 是“按列”的：
+//   NumRows = 3
+//   FieldsData["id"]        = [101, 102, 103]
+//   FieldsData["title"]     = ["red mug", "blue bottle", "green tea"]
+//   FieldsData["price"]     = [19.8, 29.9, 9.9]
+//   FieldsData["embedding"] = [
+//     0.10, 0.20, 0.30, 0.40,
+//     0.40, 0.10, 0.20, 0.30,
+//     0.12, 0.18, 0.33, 0.39,
+//   ]  // dim=4，因此 12 个 float 实际代表 3 行向量
+//
+// 返回给客户端时，一般能看到：
+//   MutationResult{
+//     IDs:       [101, 102, 103],   // 业务主键，不是内部 RowID
+//     InsertCnt: 3,
+//     Timestamp: xxx,               // 本次写入的可见时间戳
+//   }
 func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) (*milvuspb.MutationResult, error) {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Insert")
 	defer sp.End()
