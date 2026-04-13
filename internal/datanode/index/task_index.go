@@ -44,7 +44,22 @@ import (
 	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
 )
 
-// IndexBuildTask is used to record the information of the index tasks.
+// indexBuildTask 是 DataNode 侧真正执行索引构建的任务对象。
+// 端到端流程：
+//   PreExecute:  补全 DataPaths / 可选字段路径 / 参数 / 字段元信息
+//   Execute:     读取对象存储中的原始字段 binlog，调用 indexcgowrapper.CreateIndex 构建索引
+//   PostExecute: 将索引序列化并上传到 object storage，记录 file keys 和大小
+//
+// 示例：
+//   输入:
+//     segment 7001
+//     field   embedding(fieldID=103)
+//     index   HNSW
+//     data    insert_log/.../7001/103/...
+//
+//   输出:
+//     index/{buildID}/{version}/{partitionID}/{segmentID}/{fileKey}
+//       -> 多个索引文件
 type indexBuildTask struct {
 	ident  string
 	cancel context.CancelFunc
@@ -233,6 +248,14 @@ func (it *indexBuildTask) Execute(ctx context.Context) error {
 		zap.Int64("segmentID", it.req.GetSegmentID()),
 		zap.Int32("currentIndexVersion", it.req.GetCurrentIndexVersion()))
 
+	// Execute 的核心不是“算一些元数据”，而是真正 build 索引：
+	//   1. 根据 req.DataPaths / req.InsertLogs 找到目标字段的原始 binlog
+	//   2. 组装 BuildIndexInfo（字段类型、维度、行数、索引参数、存储配置）
+	//   3. 调 indexcgowrapper.CreateIndex 进入底层 Knowhere/segcore
+	//   4. 返回一个内存中的 CodecIndex 对象，等待 PostExecute 序列化上传
+	//
+	// 所以这里的输入是“原始列数据”，不是已经存在的索引文件。
+
 	indexType := it.newIndexParams[common.IndexTypeKey]
 	var fieldDataSize uint64
 	var err error
@@ -344,6 +367,13 @@ func (it *indexBuildTask) PostExecute(ctx context.Context) error {
 	log := log.Ctx(ctx).With(zap.String("clusterID", it.req.GetClusterID()), zap.Int64("buildID", it.req.GetBuildID()),
 		zap.Int64("collection", it.req.GetCollectionID()), zap.Int64("segmentID", it.req.GetSegmentID()),
 		zap.Int32("currentIndexVersion", it.req.GetCurrentIndexVersion()))
+
+	// PostExecute 做的是“把 build 结果变成真正可加载的索引产物”：
+	//   - UpLoad(): 将内存中的索引对象序列化成多个文件并上传
+	//   - StoreIndexFilesAndStatistic(): 记录 file keys、序列化大小、内存大小、版本号
+	//
+	// 后续 DataCoord 查询 worker 结果时，拿到的就是这些 file keys，
+	// QueryNode 将来加载 segment 时也会靠这些路径把索引文件取回来。
 
 	gcIndex := func() {
 		if err := it.index.Delete(); err != nil {

@@ -943,6 +943,302 @@ Flush 完成后触发索引构建：
 
 **索引构建位置**: `internal/datanode/index/`
 
+#### 先记住一个核心结论
+
+**索引不是从 WAL 直接建的，也不是从业务 JSON 直接建的。**
+
+当前链路里，索引构建的输入主要是：
+
+- Flush 后对象存储里的 **字段 binlog**
+- Collection 上定义好的 **索引元数据**
+- Segment 自身的 **行数、字段类型、维度、存储版本**
+
+也就是说，索引构建更像：
+
+```text
+Segment 7001 已 Flush
+  ├─ insert_log/.../field 103  -> 原始向量列
+  ├─ insert_log/.../field 102  -> 可选标量列（某些索引可能会带上）
+  └─ collection index meta     -> index_type=HNSW, metric_type=L2, M=16 ...
+
+DataNode 读取这些输入
+  -> 调 Knowhere / segcore build
+  -> 生成 index 文件
+  -> 上传到 object storage
+```
+
+#### 继续复用同一个例子
+
+假设前面 `segment 7001` 已经 flush，里面有两行数据：
+
+```text
+id        = [101, 103]
+title     = ["red mug", "green tea"]
+price     = [19.8, 9.9]
+embedding = [
+  0.10, 0.20, 0.30, 0.40,
+  0.12, 0.18, 0.33, 0.39
+]
+```
+
+Collection 上事先已经创建了一个向量索引定义：
+
+```text
+indexName   = "idx_embedding_hnsw"
+field       = "embedding" (fieldID = 103)
+indexType   = "HNSW"
+metricType  = "L2"
+indexParams = {"M":"16", "efConstruction":"200"}
+```
+
+那么 DataCoord 会为这个 `(segment=7001, index=idx_embedding_hnsw)` 组合创建一条**段级索引任务**。
+
+#### Step 7.1 DataCoord 先决定“这个段需不需要建索引”
+
+关键位置：
+
+- `internal/datacoord/index_inspector.go`
+- `internal/datacoord/task_index.go`
+
+`indexInspector.createIndexForSegment()` 负责：
+
+1. 给这次构建分配一个全局唯一 `BuildID`
+2. 找到这个 collection 上对应的 `IndexID / FieldID / IndexParams`
+3. 判断字段大小，估算这次构建要占多少 task slot
+4. 创建 `SegmentIndex` 元数据
+5. 把任务塞进全局调度器
+
+这时元数据里大致会出现一条记录：
+
+```text
+SegmentIndex
+  SegmentID    = 7001
+  CollectionID = 3001
+  PartitionID  = 5001
+  IndexID      = 9001
+  BuildID      = 88001
+  IndexType    = "HNSW"
+  NumRows      = 2
+  State        = Init
+```
+
+这里一个很重要的点是：
+
+- **Collection Index** 是“逻辑定义”
+- **SegmentIndex** 是“某个具体段的一次实际构建任务”
+
+所以“给 collection 建了一个索引”在底层会展开成很多条 segment 级任务。
+
+#### Step 7.2 DataCoord 组织成 CreateJobRequest 发给 DataNode
+
+`task_index.go` 里的 `prepareJobRequest()` 会把构建索引所需的输入凑齐。
+
+一个典型的 `CreateJobRequest` 可以近似理解成：
+
+```text
+CreateJobRequest
+  BuildID        = 88001
+  CollectionID   = 3001
+  PartitionID    = 5001
+  SegmentID      = 7001
+  FieldID        = 103
+  FieldName      = "embedding"
+  FieldType      = FloatVector
+  NumRows        = 2
+  Dim            = 4
+  IndexParams    = {"index_type":"HNSW", "metric_type":"L2", "M":"16", "efConstruction":"200"}
+  TypeParams     = {"dim":"4"}
+  IndexFilePrefix = "{rootPath}/index"
+  DataIds / DataPaths
+    -> 指向 field 103 的 insert binlog
+  OptionalScalarFields
+    -> 某些索引/物化视图场景下附带的标量字段 binlog
+  StorageConfig
+    -> 告诉 DataNode 去哪个对象存储读原始数据、往哪里写索引文件
+```
+
+最关键的是这几个输入：
+
+- `DataIds/DataPaths`: 告诉 DataNode 去哪里拿这个字段的原始列数据
+- `Field/Dim/NumRows`: 告诉 DataNode 这列数据应该怎么解释
+- `IndexParams`: 告诉 DataNode 要建什么索引
+- `IndexFilePrefix`: 告诉 DataNode 产物要写到哪里
+
+#### Step 7.3 DataNode 并不是凭空建索引，而是“读原始列数据再 build”
+
+关键位置：
+
+- `internal/datanode/index/scheduler.go`
+- `internal/datanode/index/task_index.go`
+
+`TaskScheduler` 做的是调度：
+
+- 从队列里取索引任务
+- 跑 `PreExecute -> Execute -> PostExecute`
+- 向量索引任务通常进专门的 build pool
+
+真正的 build 发生在 `indexBuildTask.Execute()` 里。它会：
+
+1. 把 `CreateJobRequest` 转成 `BuildIndexInfo`
+2. 把 `InsertFiles`、`FieldSchema`、`IndexParams`、`StorageConfig` 传给 `indexcgowrapper.CreateIndex`
+3. 由底层 Knowhere / segcore 读取原始 binlog 并执行构建
+
+可以把这一步理解成：
+
+```text
+DataNode Execute
+  输入:
+    embedding 原始列数据文件
+    schema(field=embedding, dim=4)
+    index params(HNSW, L2, M=16, efConstruction=200)
+
+  调底层库 build 后得到:
+    内存里的索引对象 CodecIndex
+```
+
+这里再强调一次：
+
+- **索引构建依赖原始向量列数据**
+- 建完索引后，原始 binlog 也不会消失
+
+因为 QueryNode 搜索时并不是只靠索引文件：
+
+- 标量过滤要用原始字段数据
+- 输出字段返回要用原始字段数据
+- 某些搜索/校验流程仍会依赖原始数据
+
+#### Step 7.4 DataNode PostExecute 把索引产物上传到对象存储
+
+`indexBuildTask.PostExecute()` 做两件大事：
+
+1. `it.index.UpLoad()` 把索引对象序列化成文件
+2. 记录 `fileKeys / serializedSize / memSize / version` 等信息
+
+上传后的产物会进入类似路径：
+
+```text
+index/{buildID}/{indexVersion}/{partitionID}/{segmentID}/{fileKey}
+```
+
+例如：
+
+```text
+index/88001/1/5001/7001/hnsw_meta
+index/88001/1/5001/7001/hnsw_graph
+index/88001/1/5001/7001/hnsw_data
+```
+
+文件名会随具体索引类型不同而不同，但你可以把它理解为：
+
+- 一个 BuildID 对应一批索引文件
+- 这些文件共同描述了 `segment 7001` 在 `embedding` 字段上的索引
+
+DataNode 这时会把执行结果先存在自己的任务管理器里，包含：
+
+```text
+IndexTaskInfo
+  State          = Finished
+  FileKeys       = [...]
+  SerializedSize = ...
+  MemSize        = ...
+```
+
+#### Step 7.5 DataCoord 轮询结果并把索引元数据“正式写回”
+
+DataCoord 不会在发出任务后就假设任务成功，而是会继续：
+
+1. `QueryIndex` 到对应 worker
+2. 看到状态是 `Finished / Failed / Retry`
+3. `FinishTask(result)` 把 file keys、大小、状态、失败原因等写回 index meta
+
+所以一个索引任务完整闭环是：
+
+```text
+DataCoord create task
+  -> DataNode build
+  -> DataNode upload index files
+  -> DataCoord query worker result
+  -> DataCoord finish meta
+```
+
+直到这一步，系统才真正知道：
+
+- 这个 segment 的这个 field 已经有可用索引
+- 索引文件在 object storage 的哪些 path
+- 当前索引版本是多少
+
+#### Step 7.6 为什么有些段看起来“没建索引”
+
+这不是一定失败，也可能是系统故意这么做。
+
+`task_index.go` 里有两个典型分支：
+
+1. **段太小**
+2. **某些 no-train index / 特殊索引类型**
+
+这时任务可能直接被标成“fake finished”或者跳过，因为：
+
+- 小段建索引收益很小
+- 构建成本可能高于搜索收益
+
+所以“collection 建了索引”不一定意味着“每一个 segment 都真的生成了一套重型索引文件”。
+
+#### Step 7.7 QueryNode 最后怎么把索引用起来
+
+关键位置：
+
+- `internal/querynodev2/segments/segment_loader.go`
+- `internal/querynodev2/segments/segment.go`
+
+当 QueryCoord / QueryNode 要加载一个 Sealed Segment 时，会在 `SegmentLoadInfo` 里带上 `FieldIndexInfo`，里面有：
+
+```text
+FieldIndexInfo
+  FieldID         = 103
+  IndexID         = 9001
+  BuildID         = 88001
+  IndexFilePaths  = [...]
+  IndexParams     = ...
+  IndexSize       = ...
+  NumRows         = 2
+```
+
+随后 QueryNode 会：
+
+1. 根据 `IndexFilePaths` 去对象存储或 DiskCache 找索引文件
+2. 构造 `LoadIndexInfo`
+3. 调底层 C 接口把索引 append 到 segment
+4. 更新该 segment 的本地索引信息
+
+这一步之后，这个 Sealed Segment 才能真正以“有索引”的方式参与搜索。
+
+#### Step 7.8 把索引链路和前面插入链路连起来
+
+用一句最直白的话概括就是：
+
+```text
+Insert -> WAL -> Growing Segment -> Flush 生成字段 binlog
+      -> DataCoord 发现 segment 已 flush
+      -> 为每个需要建索引的 field 创建 BuildID
+      -> DataNode 读取该 field 的原始 binlog 构建索引
+      -> 上传 index files 到 object storage
+      -> DataCoord 回写 FieldIndexInfo / SegmentIndex 状态
+      -> QueryNode 后续加载 segment 时把 index files 一起加载
+```
+
+所以你刚才问“这才是关键部分吗”，答案是：
+
+- **写入链路** 解决的是“数据先活下来并可见”
+- **索引构建链路** 解决的是“后续搜索能不能快”
+
+对向量数据库来说，这一段确实非常关键，因为它直接决定：
+
+- 搜索延迟
+- 内存占用
+- 索引文件大小
+- 小段/大段的构建策略
+- QueryNode 最终加载什么资源
+
 ### 4.9 Step 8: 段可查询
 
 索引构建完成后：

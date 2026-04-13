@@ -229,6 +229,22 @@ func (it *indexBuildTask) prepareJobRequest(ctx context.Context, segment *Segmen
 ) (*workerpb.CreateJobRequest, error) {
 	log := log.Ctx(ctx).With(zap.Int64("taskID", it.BuildID), zap.Int64("segmentID", segment.GetID()))
 
+	// 这个函数的本质是把“建索引所需的所有输入”打包成一份 CreateJobRequest 发给 DataNode。
+	//
+	// 示例：
+	//   目标：给 segment 7001 的 embedding(fieldID=103) 建 HNSW 索引
+	//
+	//   CreateJobRequest 里最关键的内容会是：
+	//     SegmentID        = 7001
+	//     FieldID          = 103
+	//     IndexParams      = {"index_type":"HNSW", "metric_type":"L2", ...}
+	//     DataIds/DataPaths
+	//       -> 指向 insert_log/.../7001/103/... 这些原始向量列数据文件
+	//     IndexFilePrefix
+	//       -> 指向 object storage 里 index/ 前缀，供后续写索引文件
+	//
+	// 也就是说，DataNode 不是从 WAL 读数据建索引，而是从已经 flush 的字段 binlog 读原始列数据建索引。
+
 	typeParams := it.meta.indexMeta.GetTypeParams(segIndex.CollectionID, segIndex.IndexID)
 	fieldID := it.meta.indexMeta.GetFieldIDByIndexID(segIndex.CollectionID, segIndex.IndexID)
 

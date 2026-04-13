@@ -2255,6 +2255,19 @@ func (loader *segmentLoader) LoadIndex(ctx context.Context,
 	loadInfo *querypb.SegmentLoadInfo,
 	version int64,
 ) error {
+	// LoadIndex 的输入已经不是“原始向量 binlog”，而是 DataCoord 回写好的 index 文件信息。
+	//
+	// 示例：
+	//   FieldIndexInfo{
+	//     FieldID        = 103,
+	//     BuildID        = 88001,
+	//     IndexFilePaths = ["index/88001/1/5001/7001/hnsw_meta", ...],
+	//   }
+	//
+	// QueryNode 在这里会：
+	//   1. 根据这些路径去对象存储 / DiskCache 找索引文件
+	//   2. 加载到本地 segment
+	//   3. 之后搜索这个 Sealed Segment 时就可以优先走索引，而不是只靠原始向量暴力扫描。
 	segment, ok := seg.(*LocalSegment)
 	if !ok {
 		return merr.WrapErrParameterInvalid("LocalSegment", fmt.Sprintf("%T", seg))

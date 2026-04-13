@@ -186,6 +186,21 @@ func (i *indexInspector) createIndexesForSegment(ctx context.Context, segment *S
 //   4. 如果 Knowhere 配置启用，可能覆盖索引类型参数
 //   5. 创建 SegmentIndex 元数据并持久化
 //   6. 提交索引构建任务到全局调度器，由 DataNode 执行实际构建
+//
+// 示例：
+//   collection 上有逻辑索引定义：
+//     field = embedding
+//     index = HNSW(L2, M=16, efConstruction=200)
+//
+//   当 segment 7001 flush 完成后，会展开成一条 segment 级任务：
+//     SegmentIndex{
+//       SegmentID = 7001,
+//       IndexID   = 9001,
+//       BuildID   = 88001,
+//       State     = Init,
+//     }
+//
+//   后续真正执行时，DataNode 会根据 BuildID=88001 去读取这个 segment 对应字段的 binlog，再构建索引文件。
 func (i *indexInspector) createIndexForSegment(ctx context.Context, segment *SegmentInfo, indexID UniqueID) error {
 	log.Info("[TRACE-INDEX] DataCoord: 为段创建索引任务",
 		zap.Int64("segmentID", segment.ID),
