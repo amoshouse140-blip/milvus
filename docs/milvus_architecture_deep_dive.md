@@ -8,6 +8,7 @@
   - [1.3 组件通信](#13-组件通信)
   - [1.4 服务发现与会话管理](#14-服务发现与会话管理)
   - [1.5 组件生命周期与状态机](#15-组件生命周期与状态机)
+  - [1.6 Go / C++ Core 边界与代码地图](#16-go--c-core-边界与代码地图)
 - [二、存储层架构](#二存储层架构)
   - [2.1 元数据存储 (Meta Storage)](#21-元数据存储-meta-storage)
     - [2.1.1 索引链路涉及的四类元数据](#211-索引链路涉及的四类元数据)
@@ -33,6 +34,7 @@
   - [4.3 Step 2: 主键分配与分片路由](#43-step-2-主键分配与分片路由)
   - [4.4 Step 3: 写入 WAL / 消息队列](#44-step-3-写入-wal--消息队列)
   - [4.5 Step 4: StreamingNode 消费与缓冲](#45-step-4-streamingnode-消费与缓冲)
+    - [4.5.1 Go 到 C++ 的真正插入点](#451-go-到-c-的真正插入点)
   - [4.6 Step 5: Segment 封存 (Seal)](#46-step-5-segment-封存-seal)
   - [4.7 Step 6: Flush 到对象存储](#47-step-6-flush-到对象存储)
   - [4.8 Step 7: 索引构建](#48-step-7-索引构建)
@@ -45,6 +47,9 @@
   - [5.5 Step 4: QueryNode 执行搜索](#55-step-4-querynode-执行搜索)
   - [5.6 Step 5: 段数据加载（缓存未命中）](#56-step-5-段数据加载缓存未命中)
   - [5.7 Step 6: C++ Core 向量检索](#57-step-6-c-core-向量检索)
+    - [5.7.1 QueryNode 到 C++ 的调用链](#571-querynode-到-c-的调用链)
+    - [5.7.2 C++ 源码地图：查询到底看哪几个目录](#572-c-源码地图查询到底看哪几个目录)
+    - [5.7.3 示例：一条查询在 C++ 里如何执行](#573-示例一条查询在-c-里如何执行)
   - [5.8 Step 7: 结果归并 (Reduce)](#58-step-7-结果归并-reduce)
   - [5.9 Query（非向量查询）流程差异](#59-query非向量查询流程差异)
   - [5.10 Hybrid Search（混合搜索）流程](#510-hybrid-search混合搜索流程)
@@ -248,6 +253,80 @@ SIGTERM/SIGINT → cancel context → drain in-flight requests
 ```
 
 超时由 `paramtable.Get().<Component>Cfg.GracefulStopTimeout` 控制。
+
+### 1.6 Go / C++ Core 边界与代码地图
+
+Milvus 不是“全 Go”或者“全 C++”的架构，而是明显的**分层协作**：
+
+- **Go** 负责：
+  - RPC / HTTP API
+  - 元数据
+  - 调度
+  - 分布式组件通信
+  - WAL / flush / compaction / index task 编排
+- **C++ Core** 负责：
+  - Segment 内的数据结构
+  - 向量搜索
+  - 标量过滤
+  - retrieve
+  - growing/sealed segment 的实际执行
+  - 向量/标量索引构建与加载
+
+#### 从代码目录看这条边界
+
+```text
+Go 业务层
+  internal/proxy/
+  internal/datacoord/
+  internal/querynodev2/
+  internal/datanode/
+  internal/flushcommon/
+        |
+        | CGO wrapper
+        v
+Go/C++ 桥接层
+  internal/util/segcore/
+  internal/util/indexcgowrapper/
+        |
+        | C API / protobuf blob
+        v
+C++ Core
+  internal/core/src/segcore/
+  internal/core/src/query/
+  internal/core/src/exec/
+  internal/core/src/index/
+  internal/core/src/indexbuilder/
+```
+
+#### 最重要的判断方法
+
+如果你看到下面这些特征，通常说明已经到了 Go/C++ 边界：
+
+- `#cgo pkg-config: milvus_core`
+- `import "C"`
+- `s.csegment.Search(...)`
+- `s.csegment.Insert(...)`
+- `indexcgowrapper.CreateIndex(...)`
+- `C.AsyncSearch(...)`
+- `C.Insert(...)`
+
+对应代码：
+
+- query/search 桥接：
+  [segment.go](/root/xty/milvus/internal/util/segcore/segment.go)
+- QueryNode segment 封装：
+  [segment.go](/root/xty/milvus/internal/querynodev2/segments/segment.go)
+- index build 桥接：
+  [task_index.go](/root/xty/milvus/internal/datanode/index/task_index.go)
+
+#### 一句话理解
+
+可以把 Milvus 想成：
+
+```text
+Go 负责把“哪张表、哪几个段、哪条请求、哪些参数”组织好
+C++ 负责在“具体的 segment 上把这次执行真的跑出来”
+```
 
 ---
 
@@ -1887,6 +1966,92 @@ Growing Segment 7002 (channel 1)
 
 如果你**刚 insert 完就立刻 search**，而此时还没 flush，这批数据就是从这些 **Growing Segments** 被搜索到的。
 
+#### 4.5.1 Go 到 C++ 的真正插入点
+
+这里很容易误解成“插入全程都在调 C++”。其实不是。
+
+系统级 insert 的大部分步骤仍然是 Go 在做：
+
+- Proxy 收请求
+- 校验 schema
+- 列式组织
+- 按 channel 分片
+- 写 WAL
+- StreamingNode / WriteBuffer 缓冲
+- Flush 到对象存储
+
+但是当一批数据真正要进入**执行层里的 growing segment** 时，底层会调 C++ segcore。
+
+##### Go 层看到的数据
+
+继续用 `segment 7001` 这个例子：
+
+```text
+segment 7001
+  id        = [101, 103]
+  title     = ["red mug", "green tea"]
+  price     = [19.8, 9.9]
+  embedding = [
+    0.10, 0.20, 0.30, 0.40,
+    0.12, 0.18, 0.33, 0.39
+  ]
+```
+
+在 QueryNode / segcore 这一层，这批数据会被封装成：
+
+```text
+InsertRequest
+  RowIDs     = [90001, 90003]
+  Timestamps = [ts, ts]
+  Record     = InsertRecord{
+    fields_data = [...]
+    num_rows    = 2
+  }
+```
+
+##### 真正进入 C++ 的位置
+
+Go 侧封装：
+
+- `LocalSegment.Insert(...)`
+  [segment.go#L760](/root/xty/milvus/internal/querynodev2/segments/segment.go#L760)
+
+里面真正调用 CGO：
+
+- `s.csegment.Insert(...)`
+  [segment.go#L781](/root/xty/milvus/internal/querynodev2/segments/segment.go#L781)
+
+再往下一层的桥接函数：
+
+- `cSegmentImpl.Insert(...)`
+  [segment.go#L242](/root/xty/milvus/internal/util/segcore/segment.go#L242)
+
+这里会做：
+
+1. `preInsert()` 让 C++ segment 预留 offset
+2. 把 `InsertRecord` 序列化成 protobuf blob
+3. 调 `C.Insert(...)` 真正写进 C++ segment
+
+##### 这一步在 C++ 代码里大概看哪里
+
+最值得先看的目录是：
+
+- `internal/core/src/segcore/`
+
+尤其是这些文件：
+
+- `SegmentGrowingImpl.cpp`
+- `InsertRecord.h`
+- `SegmentInterface.h`
+- `Collection.cpp`
+
+一句话概括这一步：
+
+```text
+系统级 insert 是 Go 在编排；
+segment 内真正的“把列式数据写进执行引擎”这一步，是 C++ segcore 在做。
+```
+
 ### 4.6 Step 5: Segment 封存 (Seal)
 
 **封存策略** (`internal/datacoord/segment_allocation_policy.go`):
@@ -2588,6 +2753,261 @@ func (s *cSegmentImpl) Search(ctx, searchReq *SearchRequest) (*SearchResult, err
 s.ptrLock.PinIf(...)
 defer s.ptrLock.Unpin()
 s.csegment.Search(ctx, searchReq)
+```
+
+#### 5.7.1 QueryNode 到 C++ 的调用链
+
+查询链路里，Go 和 C++ 的分工比插入更清楚：
+
+- Go：负责路由、收集、归并、调度
+- C++：负责 segment 内真正搜索/过滤/检索
+
+调用链大致是：
+
+```text
+Proxy.Search
+  -> QueryNode.Search
+    -> SearchHistorical / SearchStreaming
+      -> searchSegments
+        -> LocalSegment.Search
+          -> s.csegment.Search
+            -> C.AsyncSearch(...)
+              -> C++ query / segcore 执行
+```
+
+对应代码：
+
+- QueryNode 按段并发搜索：
+  [search.go#L36](/root/xty/milvus/internal/querynodev2/segments/search.go#L36)
+- Go segment 封装：
+  [segment.go#L632](/root/xty/milvus/internal/querynodev2/segments/segment.go#L632)
+- CGO 桥接：
+  [segment.go#L134](/root/xty/milvus/internal/util/segcore/segment.go#L134)
+
+普通 `Query/Retrieve` 也是类似路径：
+
+```text
+Proxy.Query
+  -> QueryNode.Query
+    -> segments.Retrieve
+      -> LocalSegment.Retrieve
+        -> s.csegment.Retrieve
+          -> C.AsyncRetrieve(...)
+```
+
+对应代码：
+
+- Go retrieve 封装：
+  [segment.go#L687](/root/xty/milvus/internal/querynodev2/segments/segment.go#L687)
+- CGO retrieve：
+  [segment.go#L172](/root/xty/milvus/internal/util/segcore/segment.go#L172)
+
+#### 5.7.2 C++ 源码地图：查询到底看哪几个目录
+
+如果你想直接追到 C++ 实现，最有价值的是下面几个目录：
+
+##### A. `internal/core/src/segcore/`
+
+职责：
+
+- Segment 的核心数据结构
+- Growing / Sealed Segment 实现
+- 字段数据加载
+- 索引加载
+- segment 级操作入口
+
+建议先看：
+
+- `SegmentGrowingImpl.cpp`
+- `ChunkedSegmentSealedImpl.cpp`
+- `SegmentInterface.cpp`
+- `SegmentLoadInfo.cpp`
+- `InsertRecord.h`
+
+可以理解成：
+
+```text
+segcore = “segment 作为执行对象”的核心实现
+```
+
+##### B. `internal/core/src/query/`
+
+职责：
+
+- Search / Retrieve / brute force / index search 的主要查询逻辑
+- 查询计划执行
+- search on growing / search on sealed
+
+建议先看：
+
+- `SearchOnGrowing.cpp`
+- `SearchOnSealed.cpp`
+- `SearchOnIndex.cpp`
+- `SearchBruteForce.cpp`
+- `Plan.cpp`
+- `PlanProto.cpp`
+
+可以理解成：
+
+```text
+query = “给定 plan 和 segment，具体怎么搜”
+```
+
+##### C. `internal/core/src/exec/`
+
+职责：
+
+- 标量表达式执行
+- 过滤算子
+- 向量搜索算子
+- aggregation / order by / project 等执行节点
+
+建议先看：
+
+- `operator/VectorSearchNode.cpp`
+- `operator/FilterBitsNode.cpp`
+- `operator/QueryOrderByNode.cpp`
+- `expression/CompareExpr.cpp`
+- `expression/ConjunctExpr.cpp`
+- `expression/TermExpr.cpp`
+
+可以理解成：
+
+```text
+exec = “过滤表达式和算子执行引擎”
+```
+
+##### D. `internal/core/src/index/`
+
+职责：
+
+- 索引结构本身
+- 向量索引 / 标量索引 / 倒排索引等实现
+
+建议先看：
+
+- `VectorMemIndex.cpp`
+- `VectorDiskIndex.cpp`
+- `ScalarIndex.cpp`
+- `InvertedIndexTantivy.cpp`
+- `IndexFactory.cpp`
+
+##### E. `internal/core/src/indexbuilder/`
+
+职责：
+
+- 真正 build 索引时的底层逻辑
+
+建议先看：
+
+- `VecIndexCreator.cpp`
+- `ScalarIndexCreator.cpp`
+- `index_c.cpp`
+
+#### 5.7.3 示例：一条查询在 C++ 里如何执行
+
+继续复用前面的例子：
+
+```text
+segment 7001
+  id        = [101, 103]
+  price     = [19.8, 9.9]
+  embedding = [
+    [0.10, 0.20, 0.30, 0.40],
+    [0.12, 0.18, 0.33, 0.39]
+  ]
+```
+
+用户查询：
+
+```text
+query vector = [0.11, 0.19, 0.31, 0.41]
+filter       = "price > 10"
+topK         = 2
+metricType   = L2
+searchField  = embedding
+```
+
+##### Go 层看到的大致内容
+
+```text
+SearchRequest
+  placeholder_group    = bytes(query vector)
+  serialized_expr_plan = bytes(plan: VectorANNS + price > 10)
+  collectionID         = 3001
+  segmentID            = 7001
+```
+
+##### 进入 C++ 前
+
+Go 桥接层会把这些东西转换成：
+
+- `cSearchPlan`
+- `cPlaceholderGroup`
+- `mvccTimestamp`
+- `consistencyLevel`
+
+然后调用：
+
+```text
+C.AsyncSearch(segment_ptr, search_plan, placeholder_group, ...)
+```
+
+##### C++ 层大致会做什么
+
+你可以近似理解成下面这几步：
+
+1. **解析查询计划**
+   - 向量字段是 `embedding`
+   - 度量方式是 `L2`
+   - 标量谓词是 `price > 10`
+
+2. **选择搜索路径**
+   - 如果 segment 上 `embedding` 已加载索引，就走 `SearchOnIndex`
+   - 如果没有索引，可能走 `SearchBruteForce`
+   - 如果是 growing segment，常见是 `SearchOnGrowing`
+
+3. **先做候选向量搜索**
+   - 在 `embedding` 上找最相近候选
+
+4. **做标量过滤**
+   - 检查候选对应的 `price`
+   - 过滤掉 `price <= 10` 的记录
+
+5. **返回 segment 级结果**
+   - `ids`
+   - `scores`
+   - `validCount`
+   - 供 Go 层后续 reduce
+
+##### 用本例结果表示
+
+假设：
+
+```text
+id=101, distance=0.0004, price=19.8
+id=103, distance=0.0022, price=9.9
+```
+
+那么 C++ 层 segment 级结果会近似变成：
+
+```text
+before filter:
+  [101, 103]
+  [0.0004, 0.0022]
+
+after "price > 10":
+  [101]
+  [0.0004]
+```
+
+然后 Go 层再把多个 segment、多个 channel 的结果继续归并。
+
+##### 一句话理解这段
+
+```text
+Go 负责“把查询组织好并发下去”；
+C++ 负责“在某个具体 segment 上把相似度搜索和过滤真的跑出来”。
 ```
 
 ### 5.8 Step 7: 结果归并 (Reduce)
