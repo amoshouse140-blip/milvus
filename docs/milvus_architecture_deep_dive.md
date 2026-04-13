@@ -10,6 +10,10 @@
   - [1.5 组件生命周期与状态机](#15-组件生命周期与状态机)
 - [二、存储层架构](#二存储层架构)
   - [2.1 元数据存储 (Meta Storage)](#21-元数据存储-meta-storage)
+    - [2.1.1 索引链路涉及的四类元数据](#211-索引链路涉及的四类元数据)
+    - [2.1.2 具体示例](#212-具体示例)
+    - [2.1.3 元数据创建时序](#213-元数据创建时序)
+    - [2.1.4 BuildID 和索引文件的生命周期](#214-buildid-和索引文件的生命周期)
   - [2.2 对象存储 (Object Storage)](#22-对象存储-object-storage)
   - [2.3 消息队列 / WAL](#23-消息队列--wal)
   - [2.4 Binlog 存储格式](#24-binlog-存储格式)
@@ -259,6 +263,529 @@ SIGTERM/SIGINT → cancel context → drain in-flight requests
 - 索引元数据、字段元数据
 
 **存储后端实现**: `internal/metastore/kv/` 目录下有 rootcoord、datacoord、querycoord 各自的 catalog 实现。
+
+#### 2.1.1 索引链路涉及的四类元数据
+
+理解索引构建前，最好先把这几类东西分开：
+
+1. **Collection Schema**
+2. **Collection Index 定义**
+3. **Segment Meta**
+4. **SegmentIndex / Build Meta**
+
+它们都属于“元数据”，但不是一回事。
+
+```text
+                    metastore (etcd / TiKV)
+┌──────────────────────────────────────────────────────────────┐
+│  1. Collection Schema                                       │
+│     - collection 里有哪些字段                              │
+│     - field type / dim / type params                        │
+│                                                              │
+│  2. Collection Index 定义                                   │
+│     - 哪个 field 要建什么 index                             │
+│     - HNSW / IVF / metric_type / user params                │
+│                                                              │
+│  3. Segment Meta                                            │
+│     - segmentID / partitionID / channel / numRows           │
+│     - state / storageVersion / binlog paths / manifest      │
+│                                                              │
+│  4. SegmentIndex / Build Meta                               │
+│     - 某个 segment 的某个 index 的 build 任务状态           │
+│     - buildID / fileKeys / size / state                     │
+└──────────────────────────────────────────────────────────────┘
+
+                    object storage (MinIO / S3)
+┌──────────────────────────────────────────────────────────────┐
+│  A. 字段 binlog                                              │
+│     - 真正的原始列数据                                       │
+│                                                              │
+│  B. index files                                               │
+│     - 真正的索引产物                                         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+最容易混淆的地方是：
+
+- **Schema / Index / Segment / SegmentIndex** 这四类是元数据，主要在 **metastore**
+- **binlog / index files** 才是对象存储里的实体文件
+
+#### 这四类元数据分别是什么
+
+| 类型 | 作用 | 什么时候创建 | 存哪里 | 关键代码 |
+|------|------|-------------|-------|---------|
+| Collection Schema | 定义 field type / dim / type params | `CreateCollection` 时 | RootCoordCatalog / metastore | `internal/rootcoord/meta_table.go` |
+| Collection Index 定义 | 定义某 field 要建什么索引 | `CreateIndex` 时 | DataCoordCatalog / metastore | `internal/datacoord/index_service.go`, `internal/datacoord/index_meta.go` |
+| Segment Meta | 描述某个 segment 当前状态和路径 | 开 segment 时创建，flush 时更新 | DataCoordCatalog / metastore | `internal/datacoord/segment_manager.go`, `internal/datacoord/meta.go`, `internal/datacoord/services.go` |
+| SegmentIndex / Build Meta | 描述某 segment 的某 index 的 build 任务与产物 | DataCoord 为 flushed segment 创建 build task 时 | DataCoordCatalog / metastore | `internal/datacoord/index_inspector.go`, `internal/datacoord/task_index.go`, `internal/datacoord/index_meta.go` |
+
+#### 这四类元数据谁创建、谁使用
+
+| 元数据 | 谁创建 | 谁读取 |
+|--------|-------|-------|
+| Collection Schema | RootCoord | Proxy / DataCoord / QueryCoord / QueryNode |
+| Collection Index 定义 | DataCoord（响应用户 CreateIndex） | DataCoord |
+| Segment Meta | DataCoord | DataCoord / QueryCoord / QueryNode |
+| SegmentIndex / Build Meta | DataCoord | DataCoord / QueryNode |
+
+#### 一个特别容易搞混的点
+
+**字段类型、维度 (`field type / dim`) 不属于 segment meta。**
+
+它们来自 **Collection Schema**。
+
+也就是说：
+
+- `NumRows / StorageVersion / State / Binlogs` 是 segment 的属性
+- `FieldType / dim / nullable / type params` 是 field schema 的属性
+
+构建索引时，DataCoord 会把它们拼起来组成 `CreateJobRequest`。
+
+#### 2.1.2 具体示例
+
+下面固定一个例子：
+
+```text
+collectionID = 3001
+partitionID  = 5001
+segmentID    = 7001
+fieldID      = 103
+fieldName    = embedding
+indexID      = 9001
+buildID      = 88001
+indexType    = HNSW
+metricType   = L2
+```
+
+假设 `segment 7001` 里这个字段有两行向量：
+
+```text
+embedding = [
+  [0.10, 0.20, 0.30, 0.40],
+  [0.12, 0.18, 0.33, 0.39],
+]
+```
+
+##### A. Collection Schema 长什么样
+
+这是“字段本身是什么”的定义，来自 collection schema：
+
+```text
+CollectionSchema
+  CollectionID = 3001
+  Fields:
+    FieldSchema{
+      FieldID    = 103
+      Name       = "embedding"
+      DataType   = FloatVector
+      TypeParams = {"dim":"4"}
+    }
+```
+
+你可以在这些代码里看到它的来源和读取：
+
+- collection 创建时落库：
+  [meta_table.go#L553](/root/xty/milvus/internal/rootcoord/meta_table.go#L553)
+- schema 模型本身：
+  [collection.go](/root/xty/milvus/internal/metastore/model/collection.go)
+  [field.go](/root/xty/milvus/internal/metastore/model/field.go)
+
+##### B. Collection Index 定义长什么样
+
+这是“这个 field 应该建什么索引”的逻辑定义：
+
+```text
+Index
+  CollectionID    = 3001
+  FieldID         = 103
+  IndexID         = 9001
+  IndexName       = "idx_embedding_hnsw"
+  TypeParams      = {"dim":"4"}
+  IndexParams     = {
+    "index_type":"HNSW",
+    "metric_type":"L2",
+    "M":"16",
+    "efConstruction":"200"
+  }
+```
+
+它的创建和落库链路是：
+
+- Proxy 转发用户 `CreateIndex`：
+  [task_index.go#L746](/root/xty/milvus/internal/proxy/task_index.go#L746)
+- DataCoord 构造 `model.Index` 并广播：
+  [index_service.go#L264](/root/xty/milvus/internal/datacoord/index_service.go#L264)
+  [index_service.go#L279](/root/xty/milvus/internal/datacoord/index_service.go#L279)
+- ack callback 后正式持久化：
+  [ddl_callbacks_create_index.go#L26](/root/xty/milvus/internal/datacoord/ddl_callbacks_create_index.go#L26)
+  [index_meta.go#L496](/root/xty/milvus/internal/datacoord/index_meta.go#L496)
+- catalog 接口定义：
+  [catalog.go#L199](/root/xty/milvus/internal/metastore/catalog.go#L199)
+
+##### C. Segment Meta 长什么样
+
+这是“这个 segment 当前怎么样”的定义：
+
+```text
+SegmentInfo
+  ID              = 7001
+  CollectionID    = 3001
+  PartitionID     = 5001
+  InsertChannel   = "ch0"
+  NumOfRows       = 2
+  State           = Flushed
+  StorageVersion  = 3
+  Binlogs         = [...]
+  Statslogs       = [...]
+  Deltalogs       = [...]
+  ManifestPath    = "..."
+```
+
+它分两阶段形成：
+
+**第一次创建**：segment 打开时
+
+- 初始 `NumOfRows = 0`
+- 初始 `State = Growing`
+- 初始 `StorageVersion = req.StorageVersion`
+
+代码：
+
+- 创建 `datapb.SegmentInfo`：
+  [segment_manager.go#L413](/root/xty/milvus/internal/datacoord/segment_manager.go#L413)
+- 持久化到 metastore：
+  [meta.go#L648](/root/xty/milvus/internal/datacoord/meta.go#L648)
+  [catalog.go#L180](/root/xty/milvus/internal/metastore/catalog.go#L180)
+
+**后续更新**：flush 完成时
+
+- `NumOfRows` 更新为真实 flushed 行数
+- `State` 变为 `Flushed`
+- `Binlogs / Statslogs / Deltalogs / ManifestPath` 回写
+- `StorageVersion` 也通过 `SaveBinlogPaths` 回写确认
+
+代码：
+
+- flush 端构造 `SaveBinlogPathsRequest`：
+  [meta_writer.go#L99](/root/xty/milvus/internal/flushcommon/syncmgr/meta_writer.go#L99)
+- DataCoord 收到后组装 operators：
+  [services.go#L560](/root/xty/milvus/internal/datacoord/services.go#L560)
+  [services.go#L662](/root/xty/milvus/internal/datacoord/services.go#L662)
+- 最终 `AlterSegments(...)` 持久化：
+  [meta.go#L1380](/root/xty/milvus/internal/datacoord/meta.go#L1380)
+  [catalog.go#L181](/root/xty/milvus/internal/metastore/catalog.go#L181)
+
+##### D. SegmentIndex / Build Meta 长什么样
+
+这是“某个具体 segment 的某个索引 build 到哪一步了”的元数据：
+
+```text
+SegmentIndex
+  SegmentID            = 7001
+  CollectionID         = 3001
+  PartitionID          = 5001
+  NumRows              = 2
+  IndexID              = 9001
+  BuildID              = 88001
+  IndexState           = Unissued / InProgress / Finished / Failed
+  IndexVersion         = 1
+  IndexFileKeys        = ["hnsw_meta", "hnsw_graph", ...]
+  IndexSerializedSize  = ...
+  IndexMemSize         = ...
+  IndexType            = "HNSW"
+```
+
+这个结构和上面的 `Index` 不是一回事：
+
+- `Index`：collection 级逻辑定义
+- `SegmentIndex`：segment 级实际 build 任务
+
+代码：
+
+- 模型定义：
+  [segment_index.go](/root/xty/milvus/internal/metastore/model/segment_index.go)
+- flushed segment 触发 build task：
+  [index_inspector.go#L183](/root/xty/milvus/internal/datacoord/index_inspector.go#L183)
+- 创建并持久化 `SegmentIndex`：
+  [index_inspector.go#L238](/root/xty/milvus/internal/datacoord/index_inspector.go#L238)
+  [index_meta.go#L516](/root/xty/milvus/internal/datacoord/index_meta.go#L516)
+- catalog 接口定义：
+  [catalog.go#L204](/root/xty/milvus/internal/metastore/catalog.go#L204)
+
+##### 这四类元数据如何拼成一次真正的索引构建请求
+
+构建 `CreateJobRequest` 时，DataCoord 实际做的是：
+
+```text
+CreateJobRequest =
+  Segment Meta
+    + Collection Index 定义
+    + Collection Schema
+    + 对象存储里的字段 binlog 路径
+```
+
+对应代码：
+
+- `prepareJobRequest()`：
+  [task_index.go#L227](/root/xty/milvus/internal/datacoord/task_index.go#L227)
+
+最关键几项：
+
+```text
+来自 Collection Schema:
+  FieldType = FloatVector
+  Dim       = 4
+
+来自 Collection Index 定义:
+  IndexParams = HNSW / L2 / M / efConstruction
+
+来自 Segment Meta:
+  SegmentID      = 7001
+  NumRows        = 2
+  StorageVersion = 3
+
+来自对象存储:
+  DataIds / DataPaths -> insert_log/.../7001/103/...
+```
+
+##### 最后用一张表收束
+
+| 信息 | 本例中的值 | 创建时机 | 存储位置 | 用途 |
+|------|-----------|---------|---------|------|
+| Collection Schema | `field 103 = embedding, FloatVector, dim=4` | CreateCollection | metastore | 告诉系统 field 的物理类型 |
+| Collection Index | `index 9001 = HNSW(L2, M=16, efConstruction=200)` | CreateIndex | metastore | 告诉系统要建什么索引 |
+| Segment Meta | `segment 7001, numRows=2, storageVersion=3, state=Flushed` | 开 segment + flush 更新 | metastore | 告诉系统这个段当前状态和路径 |
+| 字段 binlog | `insert_log/.../7001/103/...` | Flush | object storage | 提供真正的原始向量数据 |
+| SegmentIndex | `buildID 88001, state=Finished, fileKeys=[...]` | 为 flushed segment 创任务时 | metastore | 跟踪这次 build 的产物和状态 |
+
+所以你前面问的那三个输入，如果更准确地重写，应该是：
+
+```text
+1. Flush 后对象存储里的字段 binlog         -> 原始数据
+2. Collection 上定义好的索引元数据         -> 建什么索引
+3. Segment 自身的 numRows / storageVersion -> 这个段的运行时属性
+4. Collection Schema 里的 field type / dim -> 这个字段的类型说明
+```
+
+#### 2.1.3 元数据创建时序
+
+把前面的元数据放到时间线上看，会更容易理解“谁先有，谁后有”：
+
+```text
+T0: CreateCollection
+  RootCoord
+    -> 创建 Collection Schema
+    -> 持久化到 metastore
+
+T1: Insert 开始，StreamingNode / DataCoord 开新段
+  DataCoord
+    -> 创建 Segment Meta
+    -> 初始:
+       NumRows = 0
+       State = Growing
+       StorageVersion = V2/V3/...
+    -> 持久化到 metastore
+
+T2: Flush
+  Object Storage
+    -> 写出字段 binlog / statslog / deltalog
+  DataCoord
+    -> 更新 Segment Meta
+       NumRows = flushed rows
+       State = Flushed
+       Binlogs / Statslogs / Deltalogs / ManifestPath 已可见
+    -> 持久化到 metastore
+
+T3: 用户调用 CreateIndex
+  DataCoord
+    -> 创建 Collection Index 定义
+    -> 持久化到 metastore
+
+T4: indexInspector 发现 “这个 collection 有索引定义” 且 “这个 segment 已 flushed”
+  DataCoord
+    -> 为 (segment, index) 创建 SegmentIndex
+    -> 分配 BuildID
+    -> 持久化到 metastore
+
+T5: DataNode Build
+  DataNode
+    -> 读字段 binlog
+    -> 结合 schema + index params build 索引
+    -> 上传 index files 到 object storage
+
+T6: DataCoord 查询 worker 结果
+  DataCoord
+    -> 更新 SegmentIndex
+       State = Finished
+       IndexFileKeys = [...]
+       IndexSerializedSize / IndexMemSize = ...
+    -> 持久化到 metastore
+
+T7: QueryNode LoadIndex
+  QueryNode
+    -> 调 DataCoord GetIndexInfos
+    -> 拿到 IndexFilePaths
+    -> 从 object storage / DiskCache 加载索引文件
+```
+
+最关键的依赖关系是：
+
+```text
+Collection Schema
+    先于
+Collection Index 定义
+    和
+Segment Meta
+    先于
+SegmentIndex(BuildID)
+    先于
+index files 真正生成
+```
+
+换句话说：
+
+- 没有 collection schema，就不知道 `field 103` 是不是向量、维度是多少
+- 没有 flushed segment meta，就不知道有哪些 segment 需要建索引
+- 没有 collection index 定义，就不知道该建 HNSW 还是 IVF
+- 没有 BuildID，就没有一轮具体的 segment 级 build 任务
+
+#### 2.1.4 BuildID 和索引文件的生命周期
+
+`BuildID` 是索引链路里最容易迷糊、但又最关键的那个 ID。
+
+它不是：
+
+- collection ID
+- field ID
+- index ID
+- segment ID
+
+它表示的是：
+
+**一次具体的“给某个 segment 构建某个 index”的任务实例 ID。**
+
+继续用前面的例子：
+
+```text
+CollectionID = 3001
+FieldID      = 103
+IndexID      = 9001
+SegmentID    = 7001
+BuildID      = 88001
+```
+
+这几个 ID 的关系可以这样看：
+
+```text
+Collection 3001
+  └─ field 103 = embedding
+      └─ index 9001 = idx_embedding_hnsw
+          ├─ segment 7001 -> build 88001
+          ├─ segment 7002 -> build 88002
+          └─ segment 7015 -> build 88015
+```
+
+也就是说：
+
+- 一个 collection index 定义，会展开成很多个 segment build
+- 每个 segment build 都有自己的 `BuildID`
+
+##### BuildID 在代码里是怎么走的
+
+**Step A. 分配 BuildID**
+
+- `indexInspector.createIndexForSegment()` 里分配
+  [index_inspector.go#L205](/root/xty/milvus/internal/datacoord/index_inspector.go#L205)
+
+**Step B. 写入 SegmentIndex 元数据**
+
+- `BuildID` 被写入 `model.SegmentIndex`
+  [index_inspector.go#L238](/root/xty/milvus/internal/datacoord/index_inspector.go#L238)
+  [segment_index.go](/root/xty/milvus/internal/metastore/model/segment_index.go)
+
+**Step C. 发送给 DataNode**
+
+- `CreateJobRequest.BuildID = it.BuildID`
+  [task_index.go#L323](/root/xty/milvus/internal/datacoord/task_index.go#L323)
+
+**Step D. DataNode build 完后记录 file keys**
+
+- `StoreIndexFilesAndStatistic(buildID, fileKeys, ...)`
+  [task_index.go#L367](/root/xty/milvus/internal/datanode/index/task_index.go#L367)
+
+**Step E. DataCoord 查询结果并回写**
+
+- 通过 `BuildID` 查询 worker result
+  [task_index.go#L390](/root/xty/milvus/internal/datacoord/task_index.go#L390)
+
+##### index files 和 BuildID 的关系
+
+对象存储里的索引文件路径是按 `BuildID` 组织的：
+
+```text
+index/{buildID}/{indexVersion}/{partitionID}/{segmentID}/{fileKey}
+```
+
+例如：
+
+```text
+index/88001/1/5001/7001/hnsw_meta
+index/88001/1/5001/7001/hnsw_graph
+index/88001/1/5001/7001/hnsw_data
+```
+
+所以你可以把 `BuildID` 理解成：
+
+- segment 级索引构建任务的主键
+- index files 在对象存储里的一级目录 key
+- DataCoord / DataNode / QueryNode 串联这轮索引构建的“工作单号”
+
+##### QueryNode 最终拿到的不是 BuildID，而是 `IndexFilePaths`
+
+QueryNode 加载索引前，会先向 DataCoord 查询：
+
+- `GetIndexInfos`
+  [index_service.go#L1050](/root/xty/milvus/internal/datacoord/index_service.go#L1050)
+
+DataCoord 会把 `SegmentIndex + Collection Index 定义` 拼成：
+
+```text
+IndexFilePathInfo
+  SegmentID       = 7001
+  FieldID         = 103
+  IndexID         = 9001
+  BuildID         = 88001
+  IndexName       = "idx_embedding_hnsw"
+  IndexParams     = ...
+  IndexFilePaths  = [
+    "index/88001/1/5001/7001/hnsw_meta",
+    "index/88001/1/5001/7001/hnsw_graph",
+    ...
+  ]
+  NumRows         = 2
+```
+
+然后 QueryNode 在 `LoadIndex()` 里真正消费的是：
+
+- `IndexFilePaths`
+- `IndexParams`
+- `FieldID`
+- `BuildID`
+
+对应代码：
+
+- DataCoord 组装 `IndexFilePathInfo`
+  [index_service.go#L1078](/root/xty/milvus/internal/datacoord/index_service.go#L1078)
+- QueryNode 加载
+  [segment_loader.go#L2253](/root/xty/milvus/internal/querynodev2/segments/segment_loader.go#L2253)
+
+##### 用一句话把 BuildID 说透
+
+如果 `IndexID` 是“这个 collection 的这个 field 应该有一个 HNSW 索引”，
+
+那么 `BuildID` 就是：
+
+**“具体给 segment 7001 构建这套 HNSW 索引的这一轮任务编号。”**
 
 ### 2.2 对象存储 (Object Storage)
 
