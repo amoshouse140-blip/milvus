@@ -27,6 +27,7 @@
   - [3.3 DiskCache 磁盘缓存](#33-diskcache-磁盘缓存)
   - [3.4 内存估算与资源管理](#34-内存估算与资源管理)
 - [四、插入向量端到端流程](#四插入向量端到端流程)
+  - [4.0 用户视角：想插入一批数据，到底要准备什么](#40-用户视角想插入一批数据到底要准备什么)
   - [4.1 流程概览](#41-流程概览)
   - [4.2 Step 1: Proxy 接收请求](#42-step-1-proxy-接收请求)
   - [4.3 Step 2: 主键分配与分片路由](#43-step-2-主键分配与分片路由)
@@ -1172,6 +1173,351 @@ type ResourceUsage struct {
 ---
 
 ## 四、插入向量端到端流程
+
+### 4.0 用户视角：想插入一批数据，到底要准备什么
+
+如果先不看内部实现，只站在“我要把一批数据写进 Milvus”这个角度，最重要的是先分清：
+
+- **插入数据本身需要什么**
+- **为了后续搜索/查询还要做什么**
+- **哪些步骤是必须的，哪些是可选的**
+
+#### 4.0.1 最短答案
+
+如果你只是想把一批数据插进去，最少需要：
+
+1. 一个数据库（默认 `default` 也可以）
+2. 一个 collection
+3. collection 的 schema
+4. 一批符合 schema 的数据
+
+如果你还希望这批数据后面能高效地被搜索，一般还需要：
+
+5. 给向量字段建索引（`CreateIndex`）
+6. 把 collection/partition load 到 QueryNode（`LoadCollection` / `LoadPartitions`）
+
+#### 4.0.2 “必须 / 可选 / 为了搜索建议做”的分类
+
+| 步骤 | 是否必须 | 作用 | 不做会怎样 |
+|------|---------|------|-----------|
+| `CreateCollection` | 必须 | 定义 schema、主键、向量字段 | 没地方插数据 |
+| `CreatePartition` | 可选 | 如果你想显式写到某个 partition | 不写就用默认 partition 或 partition key 路由 |
+| `Insert` | 必须 | 真正写入数据 | 没有数据 |
+| `CreateIndex` | 对“插入”不是必须；对“高性能搜索”强烈建议 | 给向量字段或其他字段建立索引定义 | 还能搜索，但通常会更慢，很多段会走 brute force |
+| `LoadCollection` / `LoadPartitions` | 对“插入”不是必须；对“查询/搜索”通常必须 | 把 segment 和索引加载到 QueryNode | 不能正常 search/query |
+| `Flush` | 可选 | 让数据尽快从 growing 变成 flushed | 不影响 insert 成功；只是数据可能暂时还主要在 growing segment |
+| `ReleaseCollection` | 可选 | 释放查询资源 | 不影响插入，只影响资源占用 |
+
+#### 4.0.3 一次插入前，用户真正要准备的 6 件事
+
+##### 1. 先决定你的 collection 长什么样
+
+你至少要想清楚这些问题：
+
+| 你要决定的事 | 例子 | 为什么要先定 |
+|-------------|------|-------------|
+| collection 名字 | `product_catalog` | 数据最终写到哪张逻辑表 |
+| 主键字段 | `id` | 每行数据如何唯一标识 |
+| 向量字段 | `embedding` | 后面在哪个字段上做向量搜索 |
+| 向量维度 | `dim = 4` 或 `dim = 768` | 插入向量时必须匹配 |
+| 标量字段 | `title`, `price` | 过滤条件和结果返回要用 |
+| 主键模式 | 手动主键 / AutoID | 决定 insert 时要不要自己传主键 |
+
+对于向量库场景，通常至少要有：
+
+- 一个主键字段
+- 一个向量字段
+
+##### 2. 想清楚 partition 要不要自己管
+
+你有三种常见模式：
+
+1. **只用默认 partition**
+   最简单，不额外创建 partition。
+
+2. **手动指定 partition**
+   例如你想把数据写到 `p1`，那就要先 `CreatePartition("p1")`。
+
+3. **partition key 自动路由**
+   让系统根据某个字段自动决定 partition。
+
+如果你这次 insert 带了：
+
+```json
+"partition_name": "p1"
+```
+
+那一般意味着：
+
+- 你要么已经先创建了 `p1`
+- 要么系统处于 partition key 模式并会另外处理路由
+
+##### 3. 你的数据必须符合 schema
+
+还是用这个例子：
+
+```json
+{
+  "db_name": "demo",
+  "collection_name": "product_catalog",
+  "partition_name": "p1",
+  "num_rows": 3,
+  "fields_data": [
+    {"field_name": "id",        "type": "Int64", "data": [101, 102, 103]},
+    {"field_name": "title",     "type": "VarChar", "data": ["red mug", "blue bottle", "green tea"]},
+    {"field_name": "price",     "type": "Float", "data": [19.8, 29.9, 9.9]},
+    {"field_name": "embedding", "type": "FloatVector(dim=4)", "data": [
+      0.10, 0.20, 0.30, 0.40,
+      0.40, 0.10, 0.20, 0.30,
+      0.12, 0.18, 0.33, 0.39
+    ]}
+  ]
+}
+```
+
+你至少要保证：
+
+- `id` 真的是 `Int64`
+- `price` 真的是 `Float`
+- `embedding` 的维度真的是 4
+- `num_rows = 3`
+- 每一列都对应 3 行
+
+也就是说，下面这些都必须对齐：
+
+```text
+id    -> 3 个值
+title -> 3 个值
+price -> 3 个值
+embedding -> 3 个向量，每个向量 dim=4
+```
+
+##### 4. 先搞清楚：Insert 不等于 CreateIndex
+
+这是最容易误解的点之一。
+
+`Insert` 只做一件事：
+
+- 把数据写进去
+
+它不会要求你每次都顺手带上：
+
+- indexName
+- indexType
+- metricType
+- `M`
+- `efConstruction`
+
+这些属于 **`CreateIndex`** 这条 API，不属于 `Insert`。
+
+所以：
+
+- `Insert`：你传的是数据
+- `CreateIndex`：你传的是索引定义
+
+#### 4.0.4 用户完整流程：只插入 vs 插入后还要搜索
+
+##### 场景 A：我只想把数据插进去
+
+这时最小流程是：
+
+```text
+CreateCollection
+  -> (可选) CreatePartition
+  -> Insert
+```
+
+这就够了。
+
+索引不是必须，load 也不是必须。
+
+##### 场景 B：我插完之后还要做向量搜索
+
+这时常见流程是：
+
+```text
+CreateCollection
+  -> (可选) CreatePartition
+  -> (建议) CreateIndex on embedding
+  -> LoadCollection
+  -> Insert
+  -> Search
+```
+
+这里几个关键点：
+
+- `CreateIndex` 是为了加速搜索，不是为了让 insert 成功
+- `LoadCollection` 是为了让 QueryNode 能接管搜索
+- 新插入的数据即使还没 flush，也可能先以 growing segment 的形式被搜索到
+- flush 完并建好索引后，历史段搜索通常会更快
+
+##### 场景 C：我要“可控地”让索引尽快生效
+
+这时你可能会走：
+
+```text
+CreateCollection
+  -> CreateIndex
+  -> LoadCollection
+  -> Insert
+  -> Flush
+  -> 等索引构建完成
+  -> Search
+```
+
+这样做的目的通常不是“才能搜索”，而是：
+
+- 希望数据尽快进入 flushed segment
+- 希望索引尽快 build 完
+- 希望后续搜索尽量走索引
+
+#### 4.0.5 一个最小 API 清单
+
+下面是从“什么都没有”到“能插入并搜索”的最小用户流程。
+
+##### Step 1. CreateCollection
+
+你至少需要定义：
+
+- collection 名
+- 主键字段
+- 向量字段
+- 向量维度
+- 可选标量字段
+
+近似可以理解成：
+
+```text
+CreateCollection(
+  collection = "product_catalog",
+  schema = {
+    id:        Int64 primary key,
+    title:     VarChar,
+    price:     Float,
+    embedding: FloatVector(dim=4)
+  }
+)
+```
+
+##### Step 2. Optional CreatePartition
+
+如果你后面要显式指定：
+
+```json
+"partition_name": "p1"
+```
+
+那你通常先要：
+
+```text
+CreatePartition(collection="product_catalog", partition="p1")
+```
+
+##### Step 3. Insert
+
+插入真正的数据：
+
+```json
+{
+  "db_name": "demo",
+  "collection_name": "product_catalog",
+  "partition_name": "p1",
+  "num_rows": 3,
+  "fields_data": [
+    {"field_name": "id", "type": "Int64", "data": [101, 102, 103]},
+    {"field_name": "title", "type": "VarChar", "data": ["red mug", "blue bottle", "green tea"]},
+    {"field_name": "price", "type": "Float", "data": [19.8, 29.9, 9.9]},
+    {"field_name": "embedding", "type": "FloatVector(dim=4)", "data": [
+      0.10, 0.20, 0.30, 0.40,
+      0.40, 0.10, 0.20, 0.30,
+      0.12, 0.18, 0.33, 0.39
+    ]}
+  ]
+}
+```
+
+##### Step 4. Optional but Recommended CreateIndex
+
+如果你想对 `embedding` 做向量搜索，通常会单独发：
+
+```text
+CreateIndex(
+  collection = "product_catalog",
+  field      = "embedding",
+  indexName  = "idx_embedding_hnsw",
+  indexType  = "HNSW",
+  metricType = "L2",
+  params     = {"M":"16", "efConstruction":"200"}
+)
+```
+
+重点：
+
+- 这是用户 API，可以直接调用
+- 它不是 insert 的一部分
+- 它只对 `embedding` 这一个字段建索引，不会顺带给 `price/title/id` 建进这套 HNSW
+
+##### Step 5. LoadCollection
+
+如果你后面要 `Search / Query`，通常还要：
+
+```text
+LoadCollection("product_catalog")
+```
+
+这一步的作用是：
+
+- 把 segment 和索引加载到 QueryNode
+- 让后续查询请求能真正被执行
+
+#### 4.0.6 “我没考虑到还需要创建 index，还有其他的吗？”
+
+这个问题最实用的回答是：
+
+**取决于你的目标。**
+
+##### 如果你的目标只是“把数据存进去”
+
+你只需要：
+
+- `CreateCollection`
+- `Insert`
+
+以及可选的：
+
+- `CreatePartition`
+
+##### 如果你的目标是“后面还能高效搜索”
+
+你通常还要考虑：
+
+- `CreateIndex`
+- `LoadCollection`
+
+##### 如果你的目标是“尽快让索引参与历史段搜索”
+
+你还可能关心：
+
+- `Flush`
+- 等待 index build 完成
+
+#### 4.0.7 最终把“必须”和“建议”收成一句话
+
+如果你今天就要把数据插进去，脑子里记这一版就够了：
+
+```text
+必须：
+  1. 先有 collection（schema 要对）
+  2. 可选有 partition
+  3. 插入的数据要和 schema 对齐
+
+为了后面搜索更好：
+  4. 给向量字段单独 CreateIndex
+  5. LoadCollection 到 QueryNode
+
+可选优化：
+  6. Flush，等索引构建完成
+```
 
 ### 4.1 流程概览
 
