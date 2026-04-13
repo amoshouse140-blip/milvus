@@ -48,6 +48,12 @@ func genInsertMsgsByPartition(ctx context.Context,
 	insertMsg *msgstream.InsertMsg,
 ) ([]msgstream.TsMsg, error) {
 	threshold := Params.PulsarCfg.MaxMessageSize.GetAsInt()
+	// 关键日志字段说明：
+	// - segmentID: 当前消息要写入的 Segment ID；在 streaming 场景下这里可能先是占位值，后续由下游分配
+	// - partitionID/partitionName: 本批消息对应的分区 ID 和分区名
+	// - channelName: 这批数据即将写入的目标 VChannel
+	// - rowOffsetCount: 从原始请求里抽出了多少行放进这批消息
+	// - maxMessageSize: 单条消息允许的最大大小，超过它就要继续拆包
 	log.Ctx(ctx).Info("[TRACE-INSERT] genInsertMsgsByPartition: 按分区打包消息",
 		zap.Int64("segmentID", segmentID),
 		zap.Int64("partitionID", partitionID),

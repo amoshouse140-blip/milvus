@@ -57,6 +57,15 @@ func (it *insertTask) Execute(ctx context.Context) error {
 		return err
 	}
 
+	// 关键日志字段说明：
+	// - partition: 当前写入的逻辑分区名；若启用 Partition Key，后续还可能继续细分路由
+	// - collectionID: 集合内部 ID，真正参与元数据和写链路交互的是它
+	// - virtual_channels: Collection 绑定的全部 VChannel 列表，写入会被路由到其中一个或多个 channel
+	// - channelCount: 当前 Collection 的 VChannel 数量
+	// - task_id: Proxy 内部任务 ID，用来串联同一次 insert 的多段日志
+	// - numRows: 当前任务要处理的总行数
+	// - is_partition_key: 是否启用了 Partition Key 路由；为 true 时除了 channel 路由还会做分区路由
+	// - get_cache_duration: 从 MetaCache 取集合/VChannel 信息花了多久
 	log.Info("[TRACE-INSERT] Step4: Execute 获取 VChannel 完成, 准备分片路由",
 		zap.String("partition", it.insertMsg.GetPartitionName()),
 		zap.Int64("collectionID", collID),
@@ -129,6 +138,10 @@ func repackInsertDataForStreamingService(
 	}
 
 	for channel, rowOffsets := range channel2RowOffsets {
+		// 关键日志字段说明：
+		// - channel: 当前这批行最终被路由到的 VChannel 名称
+		// - rowCount: 有多少行被分到这个 channel
+		// - partitionID/partitionName: 这些行最终所属的分区 ID/分区名
 		log.Ctx(ctx).Info("[TRACE-INSERT] 分片路由详情: PK Hash 分配到 Channel",
 			zap.String("channel", channel),
 			zap.Int("rowCount", len(rowOffsets)),

@@ -133,6 +133,9 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 
 	collectionName := it.insertMsg.CollectionName
+	// 关键日志字段说明：
+	// - collectionName: 当前要校验的集合名
+	// - numRows: insertMsg 中的行数，会贯穿后续主键分配、校验和消息打包流程
 	log.Ctx(ctx).Info("[TRACE-INSERT] Step1: PreExecute 开始验证",
 		zap.String("collectionName", collectionName),
 		zap.Uint64("numRows", it.insertMsg.NumRows),
@@ -207,6 +210,10 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		return AllocErr
 	}
 
+	// 关键日志字段说明：
+	// - collectionID: 集合在集群内部的唯一 ID，后续和 RootCoord/DataCoord 交互都用这个值
+	// - rowIDBegin/rowIDEnd: 这批行分配到的 RowID 区间，实际范围是 [rowIDBegin, rowIDEnd)
+	// - rowNums: 这次批量分配覆盖了多少行，正常应与请求的 numRows 对齐
 	log.Ctx(ctx).Info("[TRACE-INSERT] Step2: 主键 ID 分配完成",
 		zap.Int64("collectionID", it.collectionID),
 		zap.Int64("rowIDBegin", rowIDBegin),

@@ -2789,6 +2789,13 @@ func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) 
 		SetDatabaseName(request.GetDbName()).
 		SetCollectionName(request.GetCollectionName())
 
+	// 关键日志字段说明：
+	// - db: 本次写入目标的逻辑数据库名，用来区分同一集群中的不同数据库命名空间
+	// - collection: 要写入的集合名（类似一张向量表）
+	// - partition: 请求里显式指定的分区名；为空时通常表示走默认分区，或后续由 Partition Key 决定
+	// - numRows: 这次 Insert 请求携带的行数，也就是要写入多少条实体
+	// - fieldsDataCount: 请求里带了多少列 FieldData；这是“列数/字段数”，不是“行数”
+	// - hashKeysCount: 请求里携带了多少个哈希路由 key；通常是一行对应一个 key，供后续消息分发/路由使用
 	log.Info("[TRACE-INSERT] >>> Proxy 收到 Insert 请求",
 		zap.String("db", request.DbName),
 		zap.String("collection", request.CollectionName),
