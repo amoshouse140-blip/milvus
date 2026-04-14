@@ -20,6 +20,7 @@ NUM_DOCS = 1000          # 插入文档数
 SEARCH_ROUNDS = 100      # 搜索轮数
 SEARCH_TOP_K = 10
 SEARCH_CONCURRENCY = [1, 4, 8, 16]  # 并发度（逐步加压）
+INSERT_LOG_EVERY = 0     # 0 表示不打印分批插入日志；>0 表示每 N 个 batch 打印一次
 
 
 def timed(name):
@@ -103,11 +104,21 @@ def main():
     # 分批插入，测吞吐
     BATCH_SIZE = 100
     insert_times = []
-    for start in range(0, NUM_DOCS, BATCH_SIZE):
+    total_batches = (NUM_DOCS + BATCH_SIZE - 1) // BATCH_SIZE
+    for batch_idx, start in enumerate(range(0, NUM_DOCS, BATCH_SIZE), start=1):
         batch = data[start:start + BATCH_SIZE]
-        with timed(f"insert_batch_{start}") as t_ins:
-            client.insert(collection_name=COLLECTION, data=batch)
-        insert_times.append(t_ins.elapsed)
+        t0 = time.perf_counter()
+        client.insert(collection_name=COLLECTION, data=batch)
+        elapsed = time.perf_counter() - t0
+        insert_times.append(elapsed)
+
+        if INSERT_LOG_EVERY > 0 and (
+            batch_idx % INSERT_LOG_EVERY == 0 or batch_idx == total_batches
+        ):
+            print(
+                f"  [insert_batch_{start}] {elapsed:.3f}s "
+                f"({batch_idx}/{total_batches})"
+            )
 
     total_insert = sum(insert_times)
     print(f"  总插入: {total_insert:.3f}s, 吞吐: {NUM_DOCS / total_insert:.0f} docs/s")
