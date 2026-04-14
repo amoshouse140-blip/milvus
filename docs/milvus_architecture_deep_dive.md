@@ -665,28 +665,109 @@ C++ 内部执行：
 
 ### 4.6 第⑤步：封存与 Flush
 
-**封存触发条件**（`internal/datacoord/segment_allocation_policy.go`）：
+这一步分两个阶段：先由 SyncPolicy 决定哪些 Segment 的 WriteBuffer 需要刷盘，再由 SyncTask 将数据序列化为 binlog 文件上传到对象存储。
 
-| 策略 | 条件 |
-|------|------|
-| 容量封存 | 行数达到上限 |
-| 时间封存 | 存活时间超过阈值 |
-| Binlog 数量 | binlog 文件数过多 |
-| 空闲封存 | 长时间无新写入 |
+#### 阶段一：SyncPolicy 选择需要刷盘的 Segment
 
-**Flush 过程**：WriteBuffer 中的列式数据 → 编码为 binlog 文件 → 上传到对象存储
+每次 `BufferData()` 写入新数据后，WriteBuffer 调用 `triggerSync()` 检查所有已注册的 SyncPolicy，决定哪些 Segment 需要刷盘：
 
-产出文件：
+```
+BufferData(insertData)
+  → triggerSync()
+    → getSegmentsToSync(ts, policies...)
+      → 对每个 policy:
+          policy.SelectSegments(所有 segmentBuffer, 当前时间戳)
+          → 返回需要 sync 的 segmentID 列表
+    → syncSegments(segmentIDs)
+```
 
-| 文件类型 | 内容 |
-|---------|------|
-| `insertBinlogs` | 每个字段的列数据 |
-| `statsBinlogs` | 统计信息（min/max PK, rowCount） |
-| `deltaBinlog` | 删除日志（如有） |
+SyncPolicy 类型：
 
-状态转换：`Growing → Sealed → Flushing → Flushed`
+| Policy | 触发条件 | 说明 |
+|--------|---------|------|
+| `GetFullBufferPolicy` | `buf.IsFull()` | 单个 Segment 的缓冲区写满 |
+| `GetSyncStaleBufferPolicy` | 缓冲存活超过 staleDuration | 数据在内存停留过久 |
+| `GetSealedSegmentsPolicy` | Segment 状态为 Sealed | DataCoord 封存了该段 |
+| `GetDroppedSegmentPolicy` | Segment 状态为 Dropped | Segment 被标记删除 |
+| `GetFlushTsPolicy` | checkpoint ≥ flushTs | 手动 Flush 触发 |
+| `GetOldestBufferPolicy` | 内存压力时淘汰最老的 buffer | 外部 EvictBuffer 调用 |
 
-代码：`internal/flushcommon/syncmgr/task.go`，`internal/flushcommon/writebuffer/write_buffer.go`
+封存（Seal）和 Flush 是不同的动作：
+- **Seal**：DataCoord 决定某个 Segment 不再接受新写入，将 metaCache 中的状态从 Growing 改为 Sealed。触发条件在 `internal/datacoord/segment_allocation_policy.go`（行数上限、存活时间、binlog 文件数、空闲超时）。
+- **Flush**：WriteBuffer 将该 Segment 的缓冲数据序列化并上传到对象存储。
+
+状态转换：
+
+```
+Growing → Sealed (DataCoord 封存，不再接受写入)
+       → Flushing (WriteBuffer 正在刷盘)
+       → Flushed (数据已落对象存储)
+```
+
+代码：`internal/flushcommon/writebuffer/sync_policy.go`
+
+#### 阶段二：SyncTask 将 InsertData 序列化为 binlog 上传
+
+`syncSegments()` 为每个需要刷盘的 Segment 创建 SyncTask：
+
+```
+syncSegments(segmentIDs)
+  → 对每个 segmentID:
+      getSyncTask(segmentID)
+        → yieldBuffer(segmentID)                    // 取出 WriteBuffer 中的数据
+        → 返回 insert, delta, schema, timeRange
+        → 组装 SyncPack { insertData, deleteData, segmentID, ... }
+        → 创建 SyncTask
+      syncMgr.SyncData(syncTask)
+        → SyncTask.Run()
+```
+
+`SyncTask.Run()` 的核心流程：
+
+```
+SyncTask.Run()
+  → 根据 storageVersion 选择 Writer (V2/V3/Legacy)
+  → Writer.Write(SyncPack):
+      遍历 SyncPack.insertData (即 WriteBuffer 中的 []*storage.InsertData)
+      对每个字段:
+        序列化为 Arrow/Parquet 格式
+        上传到对象存储: insert_log/{collectionID}/{partitionID}/{segmentID}/{fieldID}/{logID}
+      生成统计信息 (min/max PK, rowCount)
+        上传到: stats_log/{collectionID}/{partitionID}/{segmentID}/{fieldID}/{logID}
+      如有删除记录:
+        上传到: delta_log/{collectionID}/{partitionID}/{segmentID}/{logID}
+  → 返回 insertBinlogs, statsBinlogs, deltaBinlog, manifestPath
+  → writeMeta(): 将 binlog 路径写回 DataCoord (元数据)
+  → 更新 metaCache: FinishSyncing, 如果是 Flush 则更新状态为 Flushed
+```
+
+数据形态变化：
+
+```
+WriteBuffer 中 (Go 内存)                    对象存储中 (binlog 文件)
+
+InsertData(seg=7001):                      insert_log/3001/5001/7001/
+  Data = map[FieldID]FieldData               100/910001 → [101, 103]        Arrow/Parquet
+    100: Int64FieldData                      101/910002 → ["red mug", ...]  编码
+         {Data: [101, 103]}      ──────►     102/910003 → [19.8, 9.9]
+    101: VarCharFieldData                    103/910004 → [vec0, vec2]
+         {Data: ["red mug","green tea"]}
+    102: FloatFieldData                    stats_log/3001/5001/7001/
+         {Data: [19.8, 9.9]}                 100/920001 → {minPK=101, maxPK=103,
+    103: FloatVectorFieldData                              rowCount=2}
+         {Data: [0.10,0.20,...], Dim: 4}
+```
+
+Flush 后 InsertData 的内容和对象存储中 binlog 的内容是**同一批数据**，区别在于：
+- **编码格式**：从 Go 原生类型变为 Arrow/Parquet 二进制
+- **组织方式**：从 `map[FieldID]FieldData` 变为每个字段单独一个文件
+- **附加产物**：额外生成 statsBinlog（统计信息）和 deltaBinlog（删除记录）
+- **元数据更新**：binlog 文件路径回写到 DataCoord，Segment 状态变为 Flushed
+
+代码：
+- SyncTask：`internal/flushcommon/syncmgr/task.go:128`
+- getSyncTask（组装 SyncPack）：`internal/flushcommon/writebuffer/write_buffer.go:563`
+- syncSegments（触发刷盘）：`internal/flushcommon/writebuffer/write_buffer.go:325`
 
 ### 4.7 第⑥步：索引构建
 
