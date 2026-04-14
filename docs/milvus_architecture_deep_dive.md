@@ -499,6 +499,43 @@ WAL 写入：`streaming.WAL().AppendMessages(ctx, msgs...)`
 
 代码：`internal/proxy/task_insert_streaming.go`
 
+#### VChannel → PChannel → StreamingNode 路由
+
+InsertMsg 按 VChannel 分组后，需要路由到持有对应 WAL 的 StreamingNode。路由分三层：
+
+```
+VChannel (逻辑通道)                    PChannel (物理通道)
+  by0_3001v0  ──┐                       by0  ─── Assignment ──► StreamingNode-1
+  by0_3001v1  ──┘ ToPhysicalChannel()   by0       (StreamingCoord 维护)
+                  截掉 _3001v0 后缀
+                  → "by0"
+```
+
+**1. VChannel → PChannel**：字符串截断。VChannel 格式为 `{PChannel}_{collectionID}v{idx}`，`funcutil.ToPhysicalChannel()` 截掉最后一个 `_` 后的后缀。同一 Collection 的多个 VChannel 可能映射到同一 PChannel。
+
+**2. PChannel → StreamingNode**：通过 **Assignment（通道分配表）** 查找。StreamingCoord 维护 PChannel 到 StreamingNode 的映射，Proxy 侧的 `assignment.Watcher` 监听该分配表。
+
+**3. 连接管理**：`walAccesserImpl` 按 PChannel 维护 `ResumableProducer` 池（`map[string]*ResumableProducer`）。同一 PChannel 的所有 VChannel 共享一个 Producer。Producer 创建时通过 Assignment 获取目标 StreamingNode 的 ServerID，建立 gRPC 连接。PChannel 迁移时 ResumableProducer 自动重连。
+
+```
+AppendMessages(msgs...)
+  → dispatchMessages(): 按 msg.VChannel() 分组
+  → getProducer(vchannel):
+      pchannel = ToPhysicalChannel(vchannel)    // "by0_3001v0" → "by0"
+      复用或创建 producers[pchannel]
+  → ResumableProducer.BeginProduce(msgs...)
+      → Watcher.Get(pchannel)                   // 查分配表
+      → PChannelInfoAssigned { Channel, Node{ServerID} }
+      → 本地有 WAL？直接写 : gRPC 写远程 StreamingNode
+  → producer.Append(msg)
+```
+
+代码：
+- VChannel→PChannel：`pkg/util/funcutil/func.go:393`
+- Producer 路由：`internal/distributed/streaming/append.go:11`
+- Assignment 发现：`internal/streamingnode/client/handler/handler_client_impl.go:153`
+- 连接建立：`internal/distributed/streaming/internal/producer/producer.go:196`
+
 ### 4.4 第③步：StreamingNode 分配 Segment 与缓冲
 
 **Segment 不是 Proxy 决定的，而是 StreamingNode 的 shard 拦截器分配的**：
