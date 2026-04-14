@@ -1082,13 +1082,178 @@ HNSW 图 (内存中的邻接表结构)
 
 ### 4.8 第⑦步：段可查询
 
+**LoadCollection 和 CreateIndex 类似，都是"调用一次，后续自动生效"的 API。**
+不调用 LoadCollection，即使数据已插入、索引已构建，也完全无法搜索。
+
+#### 4.8.1 LoadCollection 触发的初始化
+
+用户调用 `LoadCollection` 后，QueryCoord 启动对该 collection 的持续监听：
+
 ```
-QueryCoord 检测到新的 Flushed + 有索引的段
-  → 分配到 QueryNode
-  → QueryNode 下载 binlog + index files
-  → 构建 Sealed Segment（C++ ChunkedSegmentSealedImpl）
-  → 段可查询，搜索走 SearchOnIndex
-  → 对应的 Growing Segment 被释放
+用户调用 LoadCollection(collectionID=100)
+        │
+        ▼
+QueryCoord:
+  ├── 记录 collection 100 为"已加载"状态
+  ├── 启动 TargetObserver 持续监听该 collection
+  │     定期调 DataCoord.GetRecoveryInfoV2(collectionID)
+  │     获取最新的 segment 列表 + channel 列表
+  │     → 更新 NextTarget（期望状态）
+  │
+  └── SegmentChecker 定期检查:
+        对比 NextTarget（期望）vs 当前分布（实际）
+        → 发现缺失的 segment → 生成 Load 任务
+        → 发现多余的 segment → 生成 Release 任务
+```
+
+代码：`internal/querycoordv2/services.go:197` `LoadCollection()`
+
+#### 4.8.2 TargetObserver — 感知新 segment
+
+`TargetObserver` 是 QueryCoord 内的后台组件，持续从 DataCoord 拉取最新的 segment 信息：
+
+```
+TargetObserver.updateNextTarget(collectionID)
+  │
+  │  调用 DataCoord.GetRecoveryInfoV2()
+  │  返回: 所有 Flushed Segment 信息 + VChannel 信息
+  │
+  ▼
+NextTarget = {
+  segments: {
+    7001: {segmentID=7001, state=Flushed, binlogs=[...], indexInfos=[...]},
+    7002: {segmentID=7002, state=Flushed, binlogs=[...], indexInfos=[...]},
+    ...
+  },
+  channels: {
+    "ch0": {channelName="ch0", seekPosition=...},
+    ...
+  }
+}
+```
+
+每个 segment 的信息包含 binlog 路径和索引文件路径（如果已建完索引）。
+
+当所有 NextTarget 中的 segment 都被加载到 QueryNode 后，NextTarget 提升为 CurrentTarget，
+然后 TargetObserver 再从 DataCoord 拉取新一轮 NextTarget，如此循环。
+
+代码：`internal/querycoordv2/observers/target_observer.go:384`，`internal/querycoordv2/meta/target_manager.go:139`
+
+#### 4.8.3 SegmentChecker — 分配 segment 到 QueryNode
+
+`SegmentChecker` 定期检查每个 collection 的每个 replica，对比期望与实际：
+
+```
+SegmentChecker.Check()
+  │
+  │  遍历所有已加载的 collection
+  │  对每个 replica:
+  │
+  ├── getSealedSegmentDiff()
+  │     对比 NextTarget 中的 segment 列表
+  │     vs   当前已分布在 QueryNode 上的 segment
+  │     → lacks: 需要加载的 segment 列表
+  │     → redundancies: 需要释放的 segment 列表
+  │
+  ├── lacks → createSegmentLoadTasks()
+  │     为每个缺失的 segment 生成 LoadSegments 任务
+  │     通过 AssignPolicy 选择目标 QueryNode（默认 RoundRobin）
+  │
+  ├── redundancies → createSegmentReduceTasks()
+  │     为多余的 segment 生成 Release 任务
+  │
+  └── getGrowingSegmentDiff()
+        检查 Growing Segment 是否已被 Sealed Segment 替代
+        → 已替代的 Growing Segment → 生成 Release 任务
+```
+
+代码：`internal/querycoordv2/checkers/segment_checker.go:103` `Check()`
+
+#### 4.8.4 QueryNode 加载 Sealed Segment
+
+QueryNode 收到 `LoadSegments` 请求后，执行实际加载：
+
+```
+QueryNode.LoadSegments(req)
+  │
+  │  req 包含:
+  │    SegmentLoadInfo {
+  │      SegmentID   = 7001
+  │      BinlogPaths = [insert_log/.../7001/101/..., ...]  ← 各字段的 binlog
+  │      IndexInfos  = [{IndexID=9001, IndexFilePaths=["abc123"], ...}]
+  │      Deltalogs   = [delta_log/.../7001/...]
+  │      NumOfRows   = 50000
+  │    }
+  │
+  ▼
+segmentLoader.Load()
+  │
+  ├── 1. NewSegment() — 创建 C++ Sealed Segment 对象
+  │
+  ├── 2. segment.Load(ctx) — 加载 binlog 数据
+  │     C++ segcore 从对象存储读取各字段的 binlog 文件
+  │     加载标量字段数据（用于过滤）
+  │     加载向量索引文件（HNSW 图反序列化到内存）
+  │
+  │     数据变化:
+  │     对象存储 binlog 文件 → C++ 内存中的列式数据
+  │     对象存储 index 文件 → C++ 内存中的 HNSW 图
+  │
+  ├── 3. loadDeltalogs() — 加载删除日志
+  │     应用删除标记，搜索时跳过已删除的行
+  │
+  └── 4. 注册到 SegmentManager
+        segment 变为可查询状态
+        后续搜索请求可以命中该 segment
+```
+
+代码：`internal/querynodev2/segments/segment_loader.go:244` `Load()`
+
+#### 4.8.5 Growing Segment 释放
+
+当 Sealed Segment 加载完成后，之前从 WAL 回放产生的 Growing Segment 数据与 Sealed Segment 重复。
+`SegmentChecker.getGrowingSegmentDiff()` 检测到这些 Growing Segment 不再存在于 target 中，
+生成 Release 任务将其释放，避免内存浪费和搜索结果重复。
+
+```
+加载前:
+  QueryNode 内存:
+    Growing Segment 7001 (WAL 回放, brute force 搜索)  ← 实时数据
+
+加载后:
+  QueryNode 内存:
+    Sealed Segment 7001 (binlog + HNSW 索引)           ← 替代 Growing
+    Growing Segment 7001                               ← 被释放
+```
+
+#### 4.8.6 全流程总结
+
+```
+LoadCollection (用户调用一次)
+      │
+      ▼
+QueryCoord 开始持续监听
+      │
+      ├─── TargetObserver ───────────────────────────┐
+      │    定期从 DataCoord 获取最新 segment 列表      │
+      │    更新 NextTarget                            │
+      │                                              │
+      ├─── SegmentChecker ──────────────────────────┐│
+      │    对比 NextTarget vs 当前分布               ││
+      │    发现缺失 → 生成 Load 任务                 ││
+      │    发现多余 → 生成 Release 任务              ││
+      │                                              ││
+      ▼                                              ││
+QueryNode                                            ││
+  ├── 下载 binlog + index 文件                       ││
+  ├── 构建 Sealed Segment (C++)                      ││
+  ├── 加载 HNSW 索引到内存                           ││
+  ├── 段可查询 (搜索走 HNSW 索引)                    ││
+  └── 释放对应的 Growing Segment                     ││
+                                                     ││
+      新 segment flush + 索引完成 ──────────────────►┘│
+      TargetObserver 感知 → SegmentChecker 触发 ────►┘
+      自动加载，无需用户再次调用
 ```
 
 ### 4.9 数据形态变化总表
