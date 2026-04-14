@@ -8,8 +8,9 @@ import random
 import string
 import statistics
 import numpy as np
+import torch
+from sentence_transformers import SentenceTransformer
 from pymilvus import MilvusClient
-from pymilvus import model
 
 # ============ 配置 ============
 MILVUS_URI = "milvus_demo.db"  # lite 模式，换成 "http://host:19530" 测真实部署
@@ -54,10 +55,20 @@ def main():
     docs = [random_text() for _ in range(NUM_DOCS)]
     subjects = [random.choice(["history", "biology", "physics", "math"]) for _ in range(NUM_DOCS)]
 
-    embedding_fn = model.DefaultEmbeddingFunction()
+    # 检测设备: Apple GPU (mps) > CUDA > CPU
+    if torch.backends.mps.is_available():
+        device = "mps"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+    print(f"  Embedding device: {device}")
+
+    embedding_fn = SentenceTransformer("all-MiniLM-L6-v2", device=device)
 
     with timed("embedding_encode") as t_embed:
-        vectors = embedding_fn.encode_documents(docs)
+        vectors = embedding_fn.encode(docs, batch_size=64, show_progress_bar=False)
+        vectors = [v.tolist() for v in vectors]
 
     embed_per_doc = t_embed.elapsed / NUM_DOCS * 1000
     print(f"  每条 embedding: {embed_per_doc:.2f}ms")
@@ -87,7 +98,8 @@ def main():
     # 预生成查询向量，排除 embedding 时间
     query_texts = [random_text(20) for _ in range(SEARCH_ROUNDS)]
     with timed("query_embedding_all") as t_qembed:
-        query_vectors_all = embedding_fn.encode_queries(query_texts)
+        query_vectors_all = embedding_fn.encode(query_texts, batch_size=64, show_progress_bar=False)
+        query_vectors_all = [v.tolist() for v in query_vectors_all]
     print(f"  查询 embedding: {t_qembed.elapsed / SEARCH_ROUNDS * 1000:.2f}ms/query")
 
     search_latencies = []
