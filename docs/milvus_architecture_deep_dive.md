@@ -563,16 +563,16 @@ InsertMessage 到达 StreamingNode
     → appendOp(ctx, msg)   // 带着 SegmentID 写入 WAL
 ```
 
-写入 WAL 后，消息变成：
+shard 拦截器在写入 WAL **之前**完成 SegmentID 填充，写入 WAL 的已经是带 SegmentID 的最终形态：
 
 ```
-之前 (Proxy 发出的):                    之后 (写入 WAL 的):
+Proxy 发出的 InsertMsg:                 shard 拦截器处理后写入 WAL 的:
   InsertMsg(ch0):                        CreateSegment(7001, ch0)     ← 如果是新段
     collectionID = 3001                  InsertMsg(ch0):
     partitionID  = 5001                    collectionID = 3001
     id = [101, 103]                        partitionID  = 5001
-    embedding = [vec0, vec2]               segmentID    = 7001        ← 新增
-    segmentID = ???  (无)                  id = [101, 103]
+    embedding = [vec0, vec2]               segmentID    = 7001        ← 拦截器填入
+    segmentID = (无)                       id = [101, 103]
                                            embedding = [vec0, vec2]
 ```
 
