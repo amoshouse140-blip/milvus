@@ -479,7 +479,7 @@ InsertRequest 进入
 | 来源 | 用户提供或 Auto-ID | Proxy 分配 |
 | 示例 | 101, 102, 103 | 90001, 90002, 90003 |
 
-### 4.3 第②步：Hash 分片与 WAL 写入
+### 4.3 第②步：Hash 分片与写入 StreamingNode WAL
 
 ```
 3 行数据, 2 个 VChannel (ch0, ch1)
@@ -495,7 +495,7 @@ InsertRequest 进入
 
 关键：**一行只进一个 channel**（按 PK Hash），但每个 channel 内部数据是列式的。
 
-WAL 写入：`streaming.WAL().AppendMessages(ctx, msgs...)`
+Proxy 本地没有 WAL。`streaming.WAL().AppendMessages()` 的内部实现是通过 gRPC 把 InsertMsg 发给持有该 PChannel 的 StreamingNode，由 StreamingNode 持久化到 WAL 后返回。对 Proxy 来说是一次 RPC 调用，"写 WAL"和"发到 StreamingNode"是同一个动作。
 
 代码：`internal/proxy/task_insert_streaming.go`
 
