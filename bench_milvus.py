@@ -15,7 +15,7 @@ from pymilvus import MilvusClient
 # ============ 配置 ============
 MILVUS_URI = "milvus_demo.db"  # lite 模式，换成 "http://host:19530" 测真实部署
 COLLECTION = "bench_collection"
-DIM = 768
+MODEL_NAME = "all-MiniLM-L6-v2"
 NUM_DOCS = 1000          # 插入文档数
 SEARCH_ROUNDS = 100      # 搜索轮数
 SEARCH_TOP_K = 10
@@ -38,22 +38,25 @@ def random_text(length=50):
     return ''.join(random.choices(string.ascii_lowercase + ' ', k=length))
 
 
+def infer_embedding_dimension(embedding_fn):
+    """从 embedding 模型读取向量维度，失败时快速报错。"""
+    dim = embedding_fn.get_sentence_embedding_dimension()
+    if dim is None or dim <= 0:
+        raise ValueError("Unable to infer embedding dimension from the model")
+    return int(dim)
+
+
+def validate_vectors(name, vectors, expected_dim):
+    """在插入/查询前检查向量长度，避免到 Milvus 搜索阶段才失败。"""
+    for idx, vector in enumerate(vectors):
+        if len(vector) != expected_dim:
+            raise ValueError(
+                f"{name}[{idx}] dim mismatch: expected {expected_dim}, got {len(vector)}"
+            )
+
+
 def main():
     client = MilvusClient(MILVUS_URI)
-
-    # ---- 清理 & 建表 ----
-    if client.has_collection(collection_name=COLLECTION):
-        client.drop_collection(collection_name=COLLECTION)
-    client.create_collection(
-        collection_name=COLLECTION,
-        dimension=DIM,
-    )
-    print(f"Collection created: dim={DIM}")
-
-    # ============ 阶段1: Embedding 生成 ============
-    print(f"\n=== 阶段1: Embedding 生成 ({NUM_DOCS} docs) ===")
-    docs = [random_text() for _ in range(NUM_DOCS)]
-    subjects = [random.choice(["history", "biology", "physics", "math"]) for _ in range(NUM_DOCS)]
 
     # 检测设备: Apple GPU (mps) > CUDA > CPU
     if torch.backends.mps.is_available():
@@ -62,13 +65,30 @@ def main():
         device = "cuda"
     else:
         device = "cpu"
-    print(f"  Embedding device: {device}")
+    print(f"Embedding model: {MODEL_NAME}")
+    print(f"Embedding device: {device}")
 
-    embedding_fn = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+    embedding_fn = SentenceTransformer(MODEL_NAME, device=device)
+    dim = infer_embedding_dimension(embedding_fn)
+
+    # ---- 清理 & 建表 ----
+    if client.has_collection(collection_name=COLLECTION):
+        client.drop_collection(collection_name=COLLECTION)
+    client.create_collection(
+        collection_name=COLLECTION,
+        dimension=dim,
+    )
+    print(f"Collection created: dim={dim}")
+
+    # ============ 阶段1: Embedding 生成 ============
+    print(f"\n=== 阶段1: Embedding 生成 ({NUM_DOCS} docs) ===")
+    docs = [random_text() for _ in range(NUM_DOCS)]
+    subjects = [random.choice(["history", "biology", "physics", "math"]) for _ in range(NUM_DOCS)]
 
     with timed("embedding_encode") as t_embed:
         vectors = embedding_fn.encode(docs, batch_size=64, show_progress_bar=False)
         vectors = [v.tolist() for v in vectors]
+    validate_vectors("doc_vectors", vectors, dim)
 
     embed_per_doc = t_embed.elapsed / NUM_DOCS * 1000
     print(f"  每条 embedding: {embed_per_doc:.2f}ms")
@@ -100,6 +120,7 @@ def main():
     with timed("query_embedding_all") as t_qembed:
         query_vectors_all = embedding_fn.encode(query_texts, batch_size=64, show_progress_bar=False)
         query_vectors_all = [v.tolist() for v in query_vectors_all]
+    validate_vectors("query_vectors", query_vectors_all, dim)
     print(f"  查询 embedding: {t_qembed.elapsed / SEARCH_ROUNDS * 1000:.2f}ms/query")
 
     search_latencies = []
@@ -181,7 +202,7 @@ def main():
     # ============ 阶段6: 纯向量计算 vs 存储读取 对比 ============
     print(f"\n=== 阶段6: 随机向量搜索 (排除 embedding 开销) ===")
 
-    random_queries = [np.random.rand(DIM).astype(np.float32).tolist() for _ in range(SEARCH_ROUNDS)]
+    random_queries = [np.random.rand(dim).astype(np.float32).tolist() for _ in range(SEARCH_ROUNDS)]
     raw_search_lats = []
     for i in range(SEARCH_ROUNDS):
         t0 = time.perf_counter()
