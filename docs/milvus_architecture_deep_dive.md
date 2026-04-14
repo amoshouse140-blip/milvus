@@ -538,26 +538,93 @@ AppendMessages(msgs...)
 
 ### 4.4 第③步：StreamingNode 分配 Segment 与缓冲
 
-**Segment 不是 Proxy 决定的，而是 StreamingNode 的 shard 拦截器分配的**：
+这一步有两个阶段：先由 shard 拦截器给 InsertMsg **打上 SegmentID 标签**，再由 Flusher 消费 WAL 把数据**按 Segment 分组缓冲**。
+
+#### 阶段一：shard 拦截器分配 SegmentID
+
+Proxy 发来的 InsertMsg 只携带 CollectionID、PartitionID、VChannel 和列式数据，**没有 SegmentID**。SegmentID 由 StreamingNode 的 shard 拦截器在写入 WAL 前分配：
 
 ```
 InsertMessage 到达 StreamingNode
   → shard_interceptor.handleInsertMessage()
-    → shardManager.AssignSegment()
-      → 当前 (collection, partition, channel) 下有可写段？
-        → 有：分配到该段
-        → 无：先往 WAL 写 CreateSegmentMessage，再分配
-
-WAL 中实际序列：
-  1. CreateSegment(7001, channel=ch0)
-  2. Insert(segment=7001, rows=[101,103])
-  3. CreateSegment(7002, channel=ch1)
-  4. Insert(segment=7002, rows=[102])
+    → 遍历 header.Partitions:
+        → shardManager.AssignSegment(AssignSegmentRequest{
+              CollectionID, PartitionID,
+              Rows,          // 本批行数
+              BinarySize,    // 本批数据大小
+              TimeTick,
+          })
+        → 当前 (collection, partition, channel) 下有可写的 Growing 段？
+            → 有：返回该段的 SegmentID
+            → 无：先往 WAL 写 CreateSegmentMessage 创建新段，再返回新 SegmentID
+    → 将 SegmentID 写入 InsertMsg 的 header:
+        partition.SegmentAssignment = { SegmentId: result.SegmentID }
+    → OverwriteHeader(header)
+    → appendOp(ctx, msg)   // 带着 SegmentID 写入 WAL
 ```
 
-然后 Flusher 消费 WAL，按 SegmentID 分组写入 WriteBuffer（纯 Go 缓冲，不涉及 C++）。
+写入 WAL 后，消息变成：
 
-代码：`internal/streamingnode/server/wal/interceptors/shard/shard_interceptor.go`
+```
+之前 (Proxy 发出的):                    之后 (写入 WAL 的):
+  InsertMsg(ch0):                        CreateSegment(7001, ch0)     ← 如果是新段
+    collectionID = 3001                  InsertMsg(ch0):
+    partitionID  = 5001                    collectionID = 3001
+    id = [101, 103]                        partitionID  = 5001
+    embedding = [vec0, vec2]               segmentID    = 7001        ← 新增
+    segmentID = ???  (无)                  id = [101, 103]
+                                           embedding = [vec0, vec2]
+```
+
+代码：`internal/streamingnode/server/wal/interceptors/shard/shard_interceptor.go:144`
+
+#### 阶段二：Flusher 消费 WAL，按 Segment 缓冲到 WriteBuffer
+
+WAL 中的 InsertMsg 现在已经带有 SegmentID。StreamingNode 内部的 Flusher 消费 WAL，将数据按 SegmentID 分组转换为 `InsertData`，写入对应 Segment 的 WriteBuffer：
+
+```
+WAL Scanner 消费消息
+  → writeNode.Operate()
+    → PrepareInsert(schema, pkField, insertMsgs):
+        lo.GroupBy(insertMsgs, msg.SegmentID)    // 按 SegmentID 分组
+        对每组:
+          InsertMsgToInsertData(msg, schema)      // InsertMsg → storage.InsertData
+          提取 pkField、tsField、构建 pk→ts 映射
+        → 返回 []*InsertData (每个 Segment 一份)
+    → BufferManager.BufferData(channel, insertData, ...):
+        对每个 InsertData:
+          getOrCreateBuffer(segmentID)            // 每个 Segment 一个 SegmentBuffer
+          segBuf.insertBuffer.Buffer(inData)      // 追加到缓冲区
+```
+
+数据形态变化：
+
+```
+InsertMsg (WAL 中)                    InsertData (WriteBuffer 中)
+  channel 级别的列式数据                 Segment 级别的列式数据
+  可能包含多个 Segment 的行              只属于一个 Segment
+  protobuf 编码                        storage.InsertData (Go 内存结构)
+
+  InsertMsg(ch0, seg=7001):            InsertData(seg=7001):
+    id = [101, 103]                      segmentID = 7001
+    embedding = [vec0, vec2]             partitionID = 5001
+    price = [19.8, 9.9]                  data = []*storage.InsertData:
+    title = ["red mug","green tea"]        field 100: [101, 103]
+                                           field 101: ["red mug","green tea"]
+                                           field 102: [19.8, 9.9]
+                                           field 103: [vec0, vec2]
+                                         pkField: [101, 103]
+                                         tsField: [ts, ts]
+                                         intPKTs: {101→ts, 103→ts}  ← pk→timestamp 映射
+                                         rowNum: 2
+```
+
+WriteBuffer 是纯 Go 内存缓冲，不涉及 C++ segcore。后续 Flush 时，WriteBuffer 中的数据会被编码为 binlog 文件上传到对象存储（见 4.6）。
+
+代码：
+- PrepareInsert：`internal/flushcommon/writebuffer/write_buffer.go:702`
+- BufferData：`internal/flushcommon/writebuffer/l0_write_buffer.go:62`
+- InsertData 结构：`internal/flushcommon/writebuffer/write_buffer.go:412`
 
 ### 4.5 第④步：QueryNode 回放实现实时可查
 
