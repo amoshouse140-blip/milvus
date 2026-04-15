@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1450 940" width="1450" height="940" role="img" aria-label="Phase 3 Query Flow">
+  <title>Phase 3 Query Flow</title>
+  <defs>
+    <style>
+      .bg{fill:#f6f7f4}.laneA{fill:#eef5f0}.laneB{fill:#eef1fb}.laneC{fill:#faf2e3}.laneD{fill:#f1efe8}.sep{stroke:#bcc9c0;stroke-width:2}
+      .head{font:700 18px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.small{font:400 13px 'Segoe UI','PingFang SC',sans-serif;fill:#5a685f}
+      .title{font:700 28px 'Segoe UI','PingFang SC',sans-serif;fill:#1f2d24}.sub{font:400 15px 'Segoe UI','PingFang SC',sans-serif;fill:#59675e}
+      .box{fill:#fff;stroke:#41584d;stroke-width:2;rx:16;ry:16}.boxb{fill:#fff;stroke:#5b6f9a;stroke-width:2;rx:16;ry:16}.boxg{fill:#fffdfa;stroke:#8f6d39;stroke-width:2;rx:16;ry:16}.boxd{fill:#fff;stroke:#6d6655;stroke-width:2;rx:16;ry:16}.boxp{fill:#f3f6ff;stroke:#5a6f9d;stroke-width:2;rx:16;ry:16}.dec{fill:#fff8ea;stroke:#9c7f36;stroke-width:2}
+      .step{font:700 15px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.text{font:400 14px 'Segoe UI','PingFang SC',sans-serif;fill:#32433a}
+      .arrow{stroke:#42594d;stroke-width:3;fill:none;marker-end:url(#a)}.dash{stroke:#6c8175;stroke-width:2.5;fill:none;stroke-dasharray:8 8;marker-end:url(#b)}
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#42594d"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6c8175"/></marker>
+  </defs>
+  <rect class="bg" width="1450" height="940"/>
+  <text class="title" x="48" y="56">Phase 3 Query 流程图</text>
+  <text class="sub" x="48" y="84">Phase 3 的关键是：新增控制面先选 active tier，再分别走 IVF_SQ8 标准档或 HNSW 性能档。</text>
+  <rect class="laneA" x="40" y="120" width="300" height="780"/><rect class="laneB" x="340" y="120" width="520" height="780"/><rect class="laneC" x="860" y="120" width="340" height="780"/><rect class="laneD" x="1200" y="120" width="210" height="780"/>
+  <line class="sep" x1="340" y1="120" x2="340" y2="900"/><line class="sep" x1="860" y1="120" x2="860" y2="900"/><line class="sep" x1="1200" y1="120" x2="1200" y2="900"/>
+  <text class="head" x="120" y="152">新增控制面</text><text class="head" x="580" y="152">Milvus</text><text class="head" x="922" y="152">Milvus 底座对象存储</text><text class="head" x="1244" y="152">本地高速盘</text>
+  <rect class="box" x="70" y="220" width="240" height="64"/><text class="step" x="88" y="252">1. QueryVectors(bucket, collection)</text><text class="text" x="92" y="274">用户不感知 tier</text>
+  <rect class="box" x="70" y="330" width="240" height="88"/><text class="step" x="92" y="362">2. 查 active tier</text><text class="text" x="92" y="384">standard / performance</text><text class="text" x="92" y="406">由 metadata 返回</text>
+  <polygon class="dec" points="190,470 290,530 190,590 90,530"/><text class="step" x="144" y="528">3. 性能档？</text>
+  <rect class="boxb" x="420" y="310" width="340" height="118"/><text class="step" x="446" y="342">4A. 标准档查询</text><text class="text" x="446" y="364">shared collection + IVF_SQ8</text><text class="text" x="446" y="386">可能还需要 group load</text><text class="text" x="446" y="408">sub-second，成本优先</text>
+  <rect class="boxp" x="420" y="620" width="340" height="118"/><text class="step" x="446" y="652">4B. 性能档查询</text><text class="text" x="446" y="674">hot_dedicated_* + HNSW</text><text class="text" x="446" y="696">常驻 load，尽量不走首查加载</text><text class="text" x="446" y="718">目标：ms 级</text>
+  <rect class="boxg" x="910" y="420" width="240" height="106"/><text class="step" x="936" y="452">5. 读取底座对象存储</text><text class="text" x="936" y="474">标准档加载 / 性能档回源</text><text class="text" x="936" y="496">都以这里为权威数据源</text>
+  <rect class="boxd" x="1230" y="420" width="150" height="106"/><text class="step" x="1252" y="452">6. 本地工作集</text><text class="text" x="1252" y="474">标准档：mmap / cache</text><text class="text" x="1252" y="496">性能档：HNSW RAM</text>
+  <rect class="box" x="70" y="760" width="240" height="92"/><text class="step" x="92" y="792">7. 返回结果 + 更新热度</text><text class="text" x="92" y="814">为毕业 / 降级策略提供输入</text><text class="text" x="92" y="836">新增控制面维护</text>
+  <path class="arrow" d="M190 284 L190 330"/><path class="arrow" d="M190 418 L190 470"/><path class="dash" d="M290 530 L420 679"/><path class="arrow" d="M190 590 L190 760"/><path class="arrow" d="M290 470 L420 370"/><path class="arrow" d="M760 370 L910 420"/><path class="arrow" d="M760 679 L910 496"/><path class="dash" d="M1150 474 L1230 474"/><path class="arrow" d="M420 786 L310 806"/>
+  <text class="small" x="48" y="922">关键边界：新增控制面决定“查哪个 tier”；Milvus 只负责执行各 tier 的实际查询。Phase 3 的价值是把 HNSW 限制在少量高价值 logical collection 上。</text>
+</svg>

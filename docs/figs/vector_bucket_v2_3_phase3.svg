@@ -29,7 +29,7 @@
 
   <rect class="bg" x="0" y="0" width="1400" height="840"/>
   <text class="title" x="48" y="56">V2.3 Phase 3：性能档（HNSW 毕业）</text>
-  <text class="subtitle" x="48" y="84">在标准档 IVF_SQ8 基础上增加 HNSW 性能档；通过热度统计和预算控制，给大 bucket / 热 bucket 提供低延迟路径。</text>
+  <text class="subtitle" x="48" y="84">在标准档 IVF_SQ8 基础上增加 HNSW 性能档；通过热度统计和预算控制，给大 logical collection / 热 logical collection 提供低延迟路径。</text>
 
   <rect class="card" x="60" y="160" width="220" height="110"/>
   <text class="label" x="92" y="202">Client / SDK</text>
@@ -70,7 +70,7 @@
 
   <rect class="perf" x="1068" y="220" width="244" height="120"/>
   <text class="label" x="1094" y="260">hot_dedicated_*</text>
-  <text class="text" x="1094" y="288">大 bucket / 热 bucket 独占 collection</text>
+  <text class="text" x="1094" y="288">大 logical collection / 热 logical collection 独占 collection</text>
   <text class="text" x="1094" y="312">目标延迟：ms 级</text>
 
   <rect class="perf" x="1068" y="370" width="244" height="138"/>

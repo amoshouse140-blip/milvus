@@ -28,7 +28,7 @@
   </defs>
 
   <rect class="bg" x="0" y="0" width="1400" height="820"/>
-  <text class="title" x="48" y="56">V2.3 Phase 1：可用版 Preview</text>
+  <text class="title" x="48" y="56">V2.3 Phase 1：单 Collection 可用版</text>
   <text class="subtitle" x="48" y="84">一个 logical collection/index 对应一个物理 Milvus collection，默认索引使用 IVF_SQ8 + mmap，按需 LoadCollection，空闲后由 LRU + TTL 释放。</text>
 
   <rect class="card" x="60" y="170" width="210" height="110"/>

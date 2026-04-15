@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 860" width="1400" height="860" role="img" aria-label="Phase 2 Insert Flow">
+  <title>Phase 2 Insert Flow</title>
+  <defs>
+    <style>
+      .bg{fill:#f6f7f4}.laneA{fill:#eef5f0}.laneB{fill:#eef1fb}.laneC{fill:#faf2e3}.laneD{fill:#f1efe8}.sep{stroke:#bcc9c0;stroke-width:2}
+      .head{font:700 18px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.small{font:400 13px 'Segoe UI','PingFang SC',sans-serif;fill:#5a685f}
+      .title{font:700 28px 'Segoe UI','PingFang SC',sans-serif;fill:#1f2d24}.sub{font:400 15px 'Segoe UI','PingFang SC',sans-serif;fill:#59675e}
+      .box{fill:#fff;stroke:#41584d;stroke-width:2;rx:16;ry:16}.boxb{fill:#fff;stroke:#5b6f9a;stroke-width:2;rx:16;ry:16}.boxg{fill:#fffdfa;stroke:#8f6d39;stroke-width:2;rx:16;ry:16}.boxd{fill:#fff;stroke:#6d6655;stroke-width:2;rx:16;ry:16}
+      .step{font:700 15px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.text{font:400 14px 'Segoe UI','PingFang SC',sans-serif;fill:#32433a}
+      .arrow{stroke:#42594d;stroke-width:3;fill:none;marker-end:url(#a)}
+      .dash{stroke:#6c8175;stroke-width:2.5;fill:none;stroke-dasharray:8 8;marker-end:url(#b)}
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#42594d"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6c8175"/></marker>
+  </defs>
+  <rect class="bg" width="1400" height="860"/>
+  <text class="title" x="48" y="56">Phase 2 Insert 流程图</text>
+  <text class="sub" x="48" y="84">Phase 2 的关键变化不是索引类型，而是写入目标从“独立物理 collection”变成“共享 collection + namespace 路由”。</text>
+  <rect class="laneA" x="40" y="120" width="280" height="700"/><rect class="laneB" x="320" y="120" width="470" height="700"/><rect class="laneC" x="790" y="120" width="340" height="700"/><rect class="laneD" x="1130" y="120" width="230" height="700"/>
+  <line class="sep" x1="320" y1="120" x2="320" y2="820"/><line class="sep" x1="790" y1="120" x2="790" y2="820"/><line class="sep" x1="1130" y1="120" x2="1130" y2="820"/>
+  <text class="head" x="120" y="152">新增控制面</text><text class="small" x="74" y="174">Gateway / Metadata / Namespace Router</text>
+  <text class="head" x="514" y="152">Milvus</text><text class="small" x="392" y="174">shared collection / partition_key / clustering compaction</text>
+  <text class="head" x="852" y="152">Milvus 底座对象存储</text><text class="small" x="866" y="174">由 JuiceFS 提供</text>
+  <text class="head" x="1174" y="152">本地高速盘</text>
+
+  <rect class="box" x="70" y="220" width="220" height="64"/><text class="step" x="92" y="252">1. PutVectors(bucket, collection)</text><text class="text" x="92" y="274">用户仍按逻辑 collection 写入</text>
+  <rect class="box" x="70" y="330" width="220" height="82"/><text class="step" x="92" y="362">2. 解析 namespace_id</text><text class="text" x="92" y="384">bucket_id + logical_collection_id</text><text class="text" x="92" y="406">-&gt; namespace group</text>
+  <rect class="box" x="70" y="470" width="220" height="82"/><text class="step" x="92" y="502">3. 路由到 shared collection</text><text class="text" x="92" y="524">例如 shared_small_01</text><text class="text" x="92" y="546">并带 partition key</text>
+  <rect class="boxb" x="420" y="470" width="270" height="92"/><text class="step" x="446" y="502">4. Insert 到共享 collection</text><text class="text" x="446" y="524">Milvus 根据 namespace_id 写入</text><text class="text" x="446" y="546">shared collection 的 growing segment</text>
+  <rect class="boxb" x="420" y="610" width="270" height="92"/><text class="step" x="446" y="642">5. Flush / Compaction / Index</text><text class="text" x="446" y="664">IVF_SQ8 持续作为标准档索引</text><text class="text" x="446" y="686">Phase 2 重点在 prune 能否成立</text>
+  <rect class="boxg" x="850" y="610" width="220" height="92"/><text class="step" x="876" y="642">6. 写回底座对象存储</text><text class="text" x="876" y="664">binlog / segment / index artifact</text><text class="text" x="876" y="686">共享 collection 产物统一落底座</text>
+  <rect class="boxd" x="1170" y="640" width="150" height="82"/><text class="step" x="1192" y="672">7. 本地工作集</text><text class="text" x="1192" y="694">mmap / chunk cache</text>
+  <rect class="box" x="70" y="640" width="220" height="82"/><text class="step" x="92" y="672">迁移前提</text><text class="text" x="92" y="694">Phase 1 的独立 collection 数据</text><text class="text" x="92" y="716">要先迁移 / 重建后再切流</text>
+
+  <path class="arrow" d="M180 284 L180 330"/><path class="arrow" d="M180 412 L180 470"/><path class="arrow" d="M290 512 L420 512"/><path class="arrow" d="M555 562 L555 610"/><path class="arrow" d="M690 656 L850 656"/><path class="dash" d="M1070 672 L1170 672"/>
+  <text class="small" x="48" y="800">关键边界：namespace 路由和 group 管理由新增控制面做；共享 collection、partition key、compaction 仍由 Milvus 做；JuiceFS 继续只提供 Milvus 底座对象存储。</text>
+</svg>

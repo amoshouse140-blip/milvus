@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1450 860" width="1450" height="860" role="img" aria-label="Phase 4 Architecture">
+  <title>Phase 4 Architecture</title>
+  <defs>
+    <style>
+      .bg{fill:#f6f7f4}.zoneA{fill:#eef5f0;stroke:#4e6f5f;stroke-width:2.5;rx:24;ry:24}.zoneB{fill:#eef1fb;stroke:#5b6f9a;stroke-width:2.5;rx:24;ry:24}.zoneC{fill:#faf2e3;stroke:#8f6d39;stroke-width:2.5;rx:24;ry:24}.zoneD{fill:#f1efe8;stroke:#6d6655;stroke-width:2.5;rx:24;ry:24}
+      .card{fill:#fff;stroke:#41584d;stroke-width:2;rx:16;ry:16}.cardb{fill:#fff;stroke:#5b6f9a;stroke-width:2;rx:16;ry:16}.cardg{fill:#fffdfa;stroke:#8f6d39;stroke-width:2;rx:16;ry:16}
+      .title{font:700 28px 'Segoe UI','PingFang SC',sans-serif;fill:#1f2d24}.sub{font:400 15px 'Segoe UI','PingFang SC',sans-serif;fill:#59675e}
+      .label{font:700 20px 'Segoe UI','PingFang SC',sans-serif;fill:#213229}.text{font:400 14px 'Segoe UI','PingFang SC',sans-serif;fill:#32433a}.small{font:400 13px 'Segoe UI','PingFang SC',sans-serif;fill:#5a685f}
+      .arrow{stroke:#42594d;stroke-width:3;fill:none;marker-end:url(#a)}.dash{stroke:#6c8175;stroke-width:2.5;fill:none;stroke-dasharray:8 8;marker-end:url(#b)}
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#42594d"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6c8175"/></marker>
+  </defs>
+  <rect class="bg" width="1450" height="860"/>
+  <text class="title" x="48" y="56">Phase 4 架构图（研究演进版）</text>
+  <text class="sub" x="48" y="84">这一阶段不是近期承诺，而是在现有标准档 / 性能档跑稳后，为下一代执行模型预留的研究方向。</text>
+  <rect class="zoneA" x="50" y="130" width="300" height="650"/><text class="label" x="78" y="170">新增控制面</text>
+  <rect class="card" x="78" y="220" width="244" height="100"/><text class="label" x="104" y="258">多 Profile Metadata</text><text class="text" x="104" y="282">一个逻辑 collection 对应多个 profile</text><text class="text" x="104" y="304">active profile 可切换</text>
+  <rect class="card" x="78" y="360" width="244" height="120"/><text class="label" x="104" y="398">Profile Scheduler</text><text class="text" x="104" y="422">HNSW / IVF / DISKANN / cold lazy</text><text class="text" x="104" y="446">按预算与热度调度</text><text class="text" x="104" y="468">可能需要 segment/profile 级状态机</text>
+  <rect class="zoneB" x="390" y="130" width="520" height="650"/><text class="label" x="418" y="170">Milvus / 新执行层</text>
+  <rect class="cardb" x="420" y="220" width="460" height="110"/><text class="label" x="446" y="258">研究方向 1：对象存储原生冷查询</text><text class="text" x="446" y="282">尽量弱化显式 LoadCollection</text><text class="text" x="446" y="304">按 segment/profile 做 lazy query</text>
+  <rect class="cardb" x="420" y="370" width="460" height="110"/><text class="label" x="446" y="408">研究方向 2：DISKANN 基础层</text><text class="text" x="446" y="432">需要稳定本地盘、可接受 build SLA</text><text class="text" x="446" y="454">提升标准档 recall 与规模能力</text>
+  <rect class="cardb" x="420" y="520" width="460" height="130"/><text class="label" x="446" y="558">研究方向 3：Milvus 原生多 profile</text><text class="text" x="446" y="582">一个 field 保留多个物理索引 profile</text><text class="text" x="446" y="606">避免 collection 级复制与重迁移</text><text class="text" x="446" y="630">这是高复杂度内核改造</text>
+  <rect class="zoneC" x="950" y="130" width="250" height="650"/><text class="label" x="978" y="170">Milvus 底座对象存储</text>
+  <rect class="cardg" x="978" y="260" width="194" height="120"/><text class="label" x="1004" y="298">始终存在</text><text class="text" x="1004" y="322">无论是 lazy query、DISKANN</text><text class="text" x="1004" y="344">还是多 profile，最终都依赖底座数据</text>
+  <rect class="zoneD" x="1240" y="130" width="160" height="650"/><text class="label" x="1268" y="170">本地高速盘</text>
+  <rect class="card" x="1266" y="300" width="108" height="120"/><text class="text" x="1282" y="334">mmap</text><text class="text" x="1282" y="358">chunk cache</text><text class="text" x="1282" y="382">DISKANN</text>
+  <path class="dash" d="M322 270 L420 270"/><path class="dash" d="M322 420 L420 420"/><path class="dash" d="M322 580 L420 580"/><path class="dash" d="M880 300 L978 320"/><path class="dash" d="M880 440 L978 320"/><path class="dash" d="M880 600 L978 320"/><path class="dash" d="M880 440 L1266 360"/>
+  <text class="small" x="48" y="822">Phase 4 的意义不是立刻交付，而是确保 Phase 1-3 的设计不会把未来路线堵死。</text>
+</svg>

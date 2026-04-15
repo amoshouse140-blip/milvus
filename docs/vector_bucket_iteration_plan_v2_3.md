@@ -231,63 +231,6 @@ Phase 1 实现原则：
 - 查询前按需 `LoadCollection`
 - 空闲 logical collection 由 `TTL + LRU` 触发 `ReleaseCollection`
 
-### 4.5 Phase 1 系统边界图
-
-![Phase 1 系统边界图](./figs/vector_bucket_v2_3_system_overview.svg)
-
-这张图专门回答：
-
-- 哪些组件是新增的
-- 哪些能力是直接复用 Milvus
-- Milvus 底座对象存储（由 JuiceFS 提供）在 Phase 1 里负责什么
-- 本地高速盘在 Phase 1 里承担什么角色
-- `bucket` 和 `logical collection` 在控制面与 Milvus 之间如何映射
-
-### 4.5.1 Phase 1 挂载目录建议
-
-当前建议把挂载关系明确成“**都是目录挂载**”。
-
-这里要统一理解：
-
-- **Milvus 底座对象存储（由 JuiceFS 提供）**
-- 在部署层表现为一个 JuiceFS 挂载目录
-
-示例：
-
-- `Milvus 底座对象存储` 挂载目录  
-  例：`/mnt/jfs/milvus-root`
-  - 作用：作为 Milvus 主持久化存储根路径
-  - 内容：segment data、binlog、index artifact 等持久化文件
-
-- 本地高速盘挂载目录 1  
-  例：`/mnt/localssd/mmap`
-  - 作用：给 mmap 相关文件使用
-  - 内容：Milvus vector index / field mmap 相关本地文件
-
-- 本地高速盘挂载目录 2  
-  例：`/mnt/localssd/chunk-cache`
-  - 作用：给 chunk cache / 本地缓存使用
-  - 内容：Milvus 读取底座对象存储文件后的本地缓存工作集
-
-如果是容器部署，建议再做一层 bind mount，例如：
-
-- 宿主机 `/mnt/jfs/milvus-root` -> 容器内 `/var/lib/milvus-data`
-- 宿主机 `/mnt/localssd/mmap` -> 容器内 `/var/lib/milvus-mmap`
-- 宿主机 `/mnt/localssd/chunk-cache` -> 容器内 `/var/lib/milvus-cache`
-
-这里最重要的是角色分工：
-
-- `Milvus 底座对象存储` 挂载目录：**权威数据**
-- 本地高速盘挂载目录：**本地加速工作集**
-
-### 4.6 Insert 流程图
-
-![Insert 流程图](./figs/vector_bucket_v2_3_insert_flow.svg)
-
-### 4.7 Query 流程图
-
-![Query 流程图](./figs/vector_bucket_v2_3_query_flow.svg)
-
 ## 5. 配置与实现假设
 
 ### 5.1 mmap 配置不应写成一句话
@@ -323,9 +266,36 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 ## 6. 阶段性路线
 
-### Phase 1：可用版 Preview
+### Phase 1：单 Collection 可用版
 
-![Phase 1 架构图](./figs/vector_bucket_v2_3_phase1.svg)
+![Phase 1 架构图](./figs/vector_bucket_v2_3_system_overview.svg)
+
+![Phase 1 Insert 流程图](./figs/vector_bucket_v2_3_insert_flow.svg)
+
+![Phase 1 Query 流程图](./figs/vector_bucket_v2_3_query_flow.svg)
+
+Phase 1 挂载目录建议：
+
+- `Milvus 底座对象存储` 挂载目录  
+  例：`/mnt/jfs/milvus-root`
+  - 作用：作为 Milvus 主持久化存储根路径
+  - 内容：segment data、binlog、index artifact 等持久化文件
+
+- 本地高速盘挂载目录 1  
+  例：`/mnt/localssd/mmap`
+  - 作用：给 mmap 相关文件使用
+  - 内容：Milvus vector index / field mmap 相关本地文件
+
+- 本地高速盘挂载目录 2  
+  例：`/mnt/localssd/chunk-cache`
+  - 作用：给 chunk cache / 本地缓存使用
+  - 内容：Milvus 读取底座对象存储文件后的本地缓存工作集
+
+容器部署时建议 bind mount：
+
+- 宿主机 `/mnt/jfs/milvus-root` -> 容器内 `/var/lib/milvus-data`
+- 宿主机 `/mnt/localssd/mmap` -> 容器内 `/var/lib/milvus-mmap`
+- 宿主机 `/mnt/localssd/chunk-cache` -> 容器内 `/var/lib/milvus-cache`
 
 交付内容：
 
@@ -343,7 +313,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 明确不做：
 
 - 多桶共表
-- bucket 自动毕业
+- logical collection 自动毕业
 - HNSW 性能档
 - 多后端联合查询
 - Milvus 深改
@@ -357,9 +327,13 @@ Phase 1 需要显式验证和配置的项至少包括：
 - 热点 logical collection 后续查询延迟稳定
 - RAM 在当前机器上可控
 
-### Phase 2：多桶共表 + 路由优化
+### Phase 2：共享 Collection 标准档
 
 ![Phase 2 架构图](./figs/vector_bucket_v2_3_phase2.svg)
+
+![Phase 2 Insert 流程图](./figs/vector_bucket_v2_3_phase2_insert.svg)
+
+![Phase 2 Query 流程图](./figs/vector_bucket_v2_3_phase2_query.svg)
 
 在 Phase 1 稳定后引入：
 
@@ -371,7 +345,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 这一阶段的重点不是“换索引”，而是：
 
-- **降低单位 bucket 的 collection 成本**
+- **降低单位 logical collection 的物理 collection 成本**
 - 提高 bucket 数量承载能力
 
 但要明确：
@@ -380,9 +354,13 @@ Phase 1 需要显式验证和配置的项至少包括：
 - 从“一个 logical collection/index 对应一个物理 collection”迁到“多 logical collections/indexes 共表”
 - 仍然需要迁移、重建、切换
 
-### Phase 3：性能档（HNSW 毕业）
+### Phase 3：性能档分层版
 
 ![Phase 3 架构图](./figs/vector_bucket_v2_3_phase3.svg)
+
+![Phase 3 Insert 流程图](./figs/vector_bucket_v2_3_phase3_insert.svg)
+
+![Phase 3 Query 流程图](./figs/vector_bucket_v2_3_phase3_query.svg)
 
 再增加：
 
@@ -395,12 +373,16 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 目标：
 
-- 大桶查询延迟从 sub-second 降到 ms 级
+- 大 logical collection 查询延迟从 sub-second 降到 ms 级
 - 产品具备性能梯度
 
-### Phase 4：研究路线
+### Phase 4：研究演进版
 
-![Phase 4 架构图](./figs/vector_bucket_v2_3_phase4.svg)
+![Phase 4 架构图](./figs/vector_bucket_v2_3_phase4_arch.svg)
+
+![Phase 4 Insert 流程图](./figs/vector_bucket_v2_3_phase4_insert.svg)
+
+![Phase 4 Query 流程图](./figs/vector_bucket_v2_3_phase4_query.svg)
 
 保留但不承诺：
 
@@ -450,7 +432,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 如果 Phase 3 给 `HNSW` 性能档预留 `4 GB`：
 
-| 向量维度 | 粗略热 bucket 容量 |
+| 向量维度 | 粗略热 logical collection 总容量 |
 | --- | --- |
 | `768D float32` | `60 万 - 90 万` |
 | `1024D float32` | `45 万 - 70 万` |

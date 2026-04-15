@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" width="1400" height="900" role="img" aria-label="Phase 2 Query Flow">
+  <title>Phase 2 Query Flow</title>
+  <defs>
+    <style>
+      .bg{fill:#f6f7f4}.laneA{fill:#eef5f0}.laneB{fill:#eef1fb}.laneC{fill:#faf2e3}.laneD{fill:#f1efe8}.sep{stroke:#bcc9c0;stroke-width:2}
+      .head{font:700 18px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.small{font:400 13px 'Segoe UI','PingFang SC',sans-serif;fill:#5a685f}
+      .title{font:700 28px 'Segoe UI','PingFang SC',sans-serif;fill:#1f2d24}.sub{font:400 15px 'Segoe UI','PingFang SC',sans-serif;fill:#59675e}
+      .box{fill:#fff;stroke:#41584d;stroke-width:2;rx:16;ry:16}.boxb{fill:#fff;stroke:#5b6f9a;stroke-width:2;rx:16;ry:16}.boxg{fill:#fffdfa;stroke:#8f6d39;stroke-width:2;rx:16;ry:16}.boxd{fill:#fff;stroke:#6d6655;stroke-width:2;rx:16;ry:16}.dec{fill:#fff8ea;stroke:#9c7f36;stroke-width:2}
+      .step{font:700 15px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.text{font:400 14px 'Segoe UI','PingFang SC',sans-serif;fill:#32433a}
+      .arrow{stroke:#42594d;stroke-width:3;fill:none;marker-end:url(#a)}.dash{stroke:#6c8175;stroke-width:2.5;fill:none;stroke-dasharray:8 8;marker-end:url(#b)}
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#42594d"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6c8175"/></marker>
+  </defs>
+  <rect class="bg" width="1400" height="900"/>
+  <text class="title" x="48" y="56">Phase 2 Query 流程图</text>
+  <text class="sub" x="48" y="84">Phase 2 的查询关键在于：先把 logical collection 路由到 shared collection，再靠 partition key + clustering compaction 做 prune。</text>
+  <rect class="laneA" x="40" y="120" width="280" height="740"/><rect class="laneB" x="320" y="120" width="470" height="740"/><rect class="laneC" x="790" y="120" width="340" height="740"/><rect class="laneD" x="1130" y="120" width="230" height="740"/>
+  <line class="sep" x1="320" y1="120" x2="320" y2="860"/><line class="sep" x1="790" y1="120" x2="790" y2="860"/><line class="sep" x1="1130" y1="120" x2="1130" y2="860"/>
+  <text class="head" x="120" y="152">新增控制面</text><text class="head" x="514" y="152">Milvus</text><text class="head" x="852" y="152">Milvus 底座对象存储</text><text class="head" x="1174" y="152">本地高速盘</text>
+  <rect class="box" x="70" y="220" width="220" height="64"/><text class="step" x="90" y="252">1. QueryVectors(bucket, collection)</text><text class="text" x="92" y="274">用户仍查逻辑 collection</text>
+  <rect class="box" x="70" y="330" width="220" height="82"/><text class="step" x="92" y="362">2. 解出 namespace_id</text><text class="text" x="92" y="384">bucket_id + logical_collection_id</text><text class="text" x="92" y="406">查到 shared collection</text>
+  <polygon class="dec" points="180,470 270,525 180,580 90,525"/><text class="step" x="140" y="524">3. group 已 load？</text>
+  <rect class="box" x="70" y="630" width="220" height="88"/><text class="step" x="92" y="662">4A. 触发 group Load</text><text class="text" x="92" y="684">新增控制面按 group 调用</text><text class="text" x="92" y="706">不是单 logical collection 粒度</text>
+  <rect class="boxb" x="420" y="630" width="270" height="94"/><text class="step" x="446" y="662">5A. Load shared collection/group</text><text class="text" x="446" y="684">Milvus 加载 group 工作集</text><text class="text" x="446" y="706">首查代价比 Phase 1 更粗粒度</text>
+  <rect class="boxg" x="850" y="630" width="220" height="94"/><text class="step" x="876" y="662">6A. 从底座对象存储取数</text><text class="text" x="876" y="684">segment / index artifact</text><text class="text" x="876" y="706">通过 JuiceFS 提供</text>
+  <rect class="boxd" x="1170" y="630" width="150" height="94"/><text class="step" x="1192" y="662">7A. 本地工作集</text><text class="text" x="1192" y="684">mmap / chunk cache</text><text class="text" x="1192" y="706">page cache</text>
+  <rect class="boxb" x="420" y="330" width="270" height="106"/><text class="step" x="446" y="362">4B / 8. 执行共享表查询</text><text class="text" x="446" y="384">shared collection + namespace_id filter</text><text class="text" x="446" y="406">依赖 partition key / clustering compaction 做 prune</text><text class="text" x="446" y="428">这是 Phase 2 必须 benchmark 的核心</text>
+  <rect class="box" x="70" y="770" width="220" height="64"/><text class="step" x="92" y="802">9. 返回结果并更新 group LRU</text>
+  <path class="arrow" d="M180 284 L180 330"/><path class="arrow" d="M290 371 L420 371"/><path class="arrow" d="M180 412 L180 470"/><path class="dash" d="M270 525 L420 525"/><path class="arrow" d="M180 580 L180 630"/><path class="arrow" d="M290 674 L420 674"/><path class="arrow" d="M690 677 L850 677"/><path class="dash" d="M1070 677 L1170 677"/><path class="arrow" d="M420 525 L420 436"/><path class="arrow" d="M420 436 L290 436"/><path class="arrow" d="M180 724 L180 770"/>
+  <text class="small" x="48" y="882">关键边界：Phase 2 的收益完全依赖 prune 是否足够好；如果 prune 不成立，shared collection 方案只会省 metadata，不一定省查询代价。</text>
+</svg>

@@ -29,7 +29,7 @@
 
   <rect class="bg" x="0" y="0" width="1400" height="840"/>
   <text class="title" x="48" y="56">V2.3 Phase 2：多桶共表 + 路由优化</text>
-  <text class="subtitle" x="48" y="84">目标不是换索引，而是降低单位 bucket 的 collection 成本；代价是必须做迁移、重建和路由切换。</text>
+  <text class="subtitle" x="48" y="84">目标不是换索引，而是降低单位 logical collection 的物理 collection 成本；代价是必须做迁移、重建和路由切换。</text>
 
   <rect class="card" x="60" y="160" width="220" height="110"/>
   <text class="label" x="92" y="202">Client / SDK</text>
