@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 920" width="1500" height="920" role="img" aria-label="V2.3 Phase 3 Tier Switch Query Flow">
+  <title>V2.3 Phase 3 在线升降级 Query 流程图</title>
+  <desc>Query 在 Phase 3 不同状态下的路径：stable、迁移中（查源）、cutover 后（查目标 + 回滚窗口）。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f5f7f4; }
+      .title { font: 700 30px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2d24; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .lane-a { fill: #eef5f0; stroke: #4e6f5f; stroke-width: 2.5; rx: 24; ry: 24; }
+      .lane-b { fill: #f4ecef; stroke: #8a4a63; stroke-width: 2.5; rx: 24; ry: 24; }
+      .lane-c { fill: #eef1fb; stroke: #5b6f9a; stroke-width: 2.5; rx: 24; ry: 24; }
+      .card { fill: #ffffff; stroke: #3d5449; stroke-width: 2; rx: 18; ry: 18; }
+      .card-rose { fill: #ffffff; stroke: #8a4a63; stroke-width: 2; rx: 18; ry: 18; }
+      .card-blue { fill: #ffffff; stroke: #556f9a; stroke-width: 2; rx: 18; ry: 18; }
+      .step { fill: #d8eadf; stroke: #4e6f5f; stroke-width: 1.5; rx: 16; ry: 16; }
+      .step-rose { fill: #f2d8e2; stroke: #8a4a63; stroke-width: 1.5; rx: 16; ry: 16; }
+      .step-blue { fill: #dbe4f5; stroke: #556f9a; stroke-width: 1.5; rx: 16; ry: 16; }
+      .label { font: 700 20px 'Segoe UI', 'PingFang SC', sans-serif; fill: #213229; }
+      .text { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #32433a; }
+      .small { font: 400 13px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .mono { font: 600 14px 'SFMono-Regular', Consolas, monospace; fill: #213229; }
+      .arrow { stroke: #42594d; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-rose { stroke: #8a4a63; stroke-width: 3; fill: none; marker-end: url(#arrowRose); }
+      .arrow-blue { stroke: #556f9a; stroke-width: 3; fill: none; marker-end: url(#arrowBlue); }
+      .arrow-soft { stroke: #6c8175; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42594d"/>
+    </marker>
+    <marker id="arrowRose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a4a63"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#556f9a"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8175"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="920"/>
+  <text class="title" x="50" y="58">V2.3 Phase 3 Query 流程图（按 migrate_state 分三种路径）</text>
+  <text class="subtitle" x="50" y="88">Query 永远走"权威档"：stable 查 src；迁移中仍查 src；cutover 之后查 dst，期间 src 保留作为回滚窗口。</text>
+
+  <rect class="lane-a" x="50" y="130" width="1400" height="230"/>
+  <text class="label" x="78" y="170">路径 A：stable（无迁移）</text>
+  <rect class="step" x="290" y="144" width="140" height="28"/><text class="small" x="314" y="163">最常见路径</text>
+
+  <rect class="card" x="80" y="210" width="200" height="100"/>
+  <text class="label" x="108" y="248">Client</text>
+  <text class="text" x="108" y="278">QueryVectors</text>
+
+  <rect class="card" x="330" y="210" width="220" height="100"/>
+  <text class="label" x="358" y="248">Router</text>
+  <text class="text" x="358" y="278">tier + state = stable</text>
+
+  <rect class="card" x="600" y="210" width="240" height="100"/>
+  <text class="label" x="628" y="248">Load Controller</text>
+  <text class="text" x="628" y="278">check loaded</text>
+  <text class="text" x="628" y="302">(按需 load)</text>
+
+  <rect class="card" x="890" y="210" width="240" height="100"/>
+  <text class="label" x="918" y="248">Milvus Adapter</text>
+  <text class="text" x="918" y="278">Search(src_collection)</text>
+
+  <rect class="card" x="1180" y="210" width="240" height="100"/>
+  <text class="label" x="1208" y="248">Client</text>
+  <text class="text" x="1208" y="278">topK 结果</text>
+
+  <path class="arrow" d="M 280 260 L 330 260"/>
+  <path class="arrow" d="M 550 260 L 600 260"/>
+  <path class="arrow" d="M 840 260 L 890 260"/>
+  <path class="arrow" d="M 1130 260 L 1180 260"/>
+
+  <rect class="lane-b" x="50" y="380" width="1400" height="230"/>
+  <text class="label" x="78" y="420">路径 B：迁移中未 cutover（查 src）</text>
+  <rect class="step-rose" x="420" y="394" width="200" height="28"/><text class="small" x="444" y="413">upgrading / dual_writing</text>
+
+  <rect class="card-rose" x="80" y="460" width="200" height="100"/>
+  <text class="label" x="108" y="498">Client</text>
+  <text class="text" x="108" y="528">QueryVectors</text>
+
+  <rect class="card-rose" x="330" y="460" width="220" height="100"/>
+  <text class="label" x="358" y="498">Router</text>
+  <text class="text" x="358" y="528">state ≠ stable</text>
+  <text class="text" x="358" y="552">路由到 src（权威）</text>
+
+  <rect class="card-rose" x="600" y="460" width="240" height="100"/>
+  <text class="label" x="628" y="498">src (IVF_SQ8)</text>
+  <text class="text" x="628" y="528">未切换前一直是权威</text>
+  <text class="text" x="628" y="552">保持用户可见一致性</text>
+
+  <rect class="card-rose" x="890" y="460" width="240" height="100"/>
+  <text class="label" x="918" y="498">dst (HNSW)</text>
+  <text class="text" x="918" y="528">正在建索引 / load</text>
+  <text class="text" x="918" y="552">查询不走这里</text>
+
+  <rect class="card-rose" x="1180" y="460" width="240" height="100"/>
+  <text class="label" x="1208" y="498">Client</text>
+  <text class="text" x="1208" y="528">topK 结果</text>
+  <text class="text" x="1208" y="552">延迟等同 Phase 1</text>
+
+  <path class="arrow-rose" d="M 280 510 L 330 510"/>
+  <path class="arrow-rose" d="M 550 510 L 600 510"/>
+  <path class="arrow-soft" d="M 840 510 L 890 510"/>
+  <path class="arrow-rose" d="M 1130 510 L 1180 510"/>
+
+  <rect class="lane-c" x="50" y="630" width="1400" height="230"/>
+  <text class="label" x="78" y="670">路径 C：cutover 后（查 dst + 回滚窗口）</text>
+  <rect class="step-blue" x="440" y="644" width="180" height="28"/><text class="small" x="464" y="663">rollback_window</text>
+
+  <rect class="card-blue" x="80" y="710" width="200" height="100"/>
+  <text class="label" x="108" y="748">Client</text>
+  <text class="text" x="108" y="778">QueryVectors</text>
+
+  <rect class="card-blue" x="330" y="710" width="220" height="100"/>
+  <text class="label" x="358" y="748">Router</text>
+  <text class="text" x="358" y="778">state = rollback_window</text>
+  <text class="text" x="358" y="802">tier 已切，走 dst</text>
+
+  <rect class="card-blue" x="600" y="710" width="240" height="100"/>
+  <text class="label" x="628" y="748">dst (HNSW)</text>
+  <text class="text" x="628" y="778">常驻 load，查询 ms 级</text>
+
+  <rect class="card-blue" x="890" y="710" width="240" height="100"/>
+  <text class="label" x="918" y="748">src (保留 24h)</text>
+  <text class="text" x="918" y="778">不查询，仅双写</text>
+  <text class="text" x="918" y="802">异常时一键回滚</text>
+
+  <rect class="card-blue" x="1180" y="710" width="240" height="100"/>
+  <text class="label" x="1208" y="748">Client</text>
+  <text class="text" x="1208" y="778">topK 结果（更快）</text>
+  <text class="text" x="1208" y="802">p99 ≤ 20 ms</text>
+
+  <path class="arrow-blue" d="M 280 760 L 330 760"/>
+  <path class="arrow-blue" d="M 550 760 L 600 760"/>
+  <path class="arrow-soft" d="M 840 760 L 890 760"/>
+  <path class="arrow-blue" d="M 1130 760 L 1180 760"/>
+
+  <rect class="step-blue" x="50" y="880" width="1400" height="32"/>
+  <text class="small" x="74" y="902">一句话：查询永远走"当前权威档"——cutover 之前是 src，cutover 之后是 dst；src 在回滚窗口内保留以便异常一键切回。</text>
+</svg>

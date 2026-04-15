@@ -390,6 +390,12 @@ Controller.Unpin(collection_name)    # 性能档删除时调用
 
 ## 8. Phase 3：在线升降级
 
+![Phase 3 架构图](./figs/vector_bucket_v2_3_tier_switch_arch.svg)
+
+![Phase 3 Insert 流程图](./figs/vector_bucket_v2_3_tier_switch_insert.svg)
+
+![Phase 3 Query 流程图](./figs/vector_bucket_v2_3_tier_switch_query.svg)
+
 ### 8.1 目标
 
 允许运行中的 logical collection 在 `standard` 和 `performance` 之间切换，而不需要 drop + 重建。
