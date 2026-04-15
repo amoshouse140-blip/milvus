@@ -200,6 +200,25 @@ Phase 1 实现原则：
 - 查询前按需 `LoadCollection`
 - 空闲 bucket 由 `TTL + LRU` 触发 `ReleaseCollection`
 
+### 4.5 Phase 1 系统边界图
+
+![Phase 1 系统边界图](./figs/vector_bucket_v2_3_system_overview.svg)
+
+这张图专门回答：
+
+- 哪些组件是新增的
+- 哪些能力是直接复用 Milvus
+- JuiceFS / 对象存储在 Phase 1 里负责什么
+- 本地高速盘在 Phase 1 里承担什么角色
+
+### 4.6 Insert 流程图
+
+![Insert 流程图](./figs/vector_bucket_v2_3_insert_flow.svg)
+
+### 4.7 Query 流程图
+
+![Query 流程图](./figs/vector_bucket_v2_3_query_flow.svg)
+
 ## 5. 配置与实现假设
 
 ### 5.1 mmap 配置不应写成一句话

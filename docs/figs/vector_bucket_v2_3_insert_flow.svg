@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 980" width="1500" height="980" role="img" aria-label="V2.3 Insert Flow">
+  <title>V2.3 Insert Flow</title>
+  <desc>Insert flow showing responsibilities of client, new control plane, Milvus, JuiceFS and local disk.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f6f7f4; }
+      .title { font: 700 30px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2d24; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #59675e; }
+      .lane-new { fill: #eef5f0; }
+      .lane-milvus { fill: #eef1fb; }
+      .lane-storage { fill: #faf2e3; }
+      .lane-disk { fill: #f1efe8; }
+      .sep { stroke: #bcc9c0; stroke-width: 2; }
+      .head { font: 700 18px 'Segoe UI', 'PingFang SC', sans-serif; fill: #223229; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .box { fill: #ffffff; stroke: #41584d; stroke-width: 2; rx: 16; ry: 16; }
+      .box-blue { fill: #ffffff; stroke: #5b6f9a; stroke-width: 2; rx: 16; ry: 16; }
+      .box-gold { fill: #fffdfa; stroke: #8f6d39; stroke-width: 2; rx: 16; ry: 16; }
+      .box-gray { fill: #ffffff; stroke: #6d6655; stroke-width: 2; rx: 16; ry: 16; }
+      .text { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #32433a; }
+      .step { font: 700 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #223229; }
+      .arrow { stroke: #42594d; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6c8175; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+      .lane-line { stroke: #a8b7ad; stroke-width: 2; stroke-dasharray: 8 8; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42594d"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8175"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="980"/>
+  <text class="title" x="50" y="58">V2.3 Insert 流程图</text>
+  <text class="subtitle" x="50" y="88">重点说明：写入主链路里，哪些由新增控制面处理，哪些由 Milvus 处理，哪些最终写入 JuiceFS / 对象存储。</text>
+
+  <rect class="lane-new" x="40" y="120" width="260" height="800"/>
+  <rect class="lane-new" x="300" y="120" width="320" height="800"/>
+  <rect class="lane-milvus" x="620" y="120" width="420" height="800"/>
+  <rect class="lane-storage" x="1040" y="120" width="260" height="800"/>
+  <rect class="lane-disk" x="1300" y="120" width="160" height="800"/>
+
+  <line class="sep" x1="300" y1="120" x2="300" y2="920"/>
+  <line class="sep" x1="620" y1="120" x2="620" y2="920"/>
+  <line class="sep" x1="1040" y1="120" x2="1040" y2="920"/>
+  <line class="sep" x1="1300" y1="120" x2="1300" y2="920"/>
+
+  <text class="head" x="112" y="152">Client</text>
+  <text class="head" x="380" y="152">新增控制面</text>
+  <text class="small" x="330" y="176">Gateway / Metadata / Router</text>
+  <text class="head" x="790" y="152">Milvus</text>
+  <text class="small" x="682" y="176">Proxy / WAL / DataNode / IndexNode / QueryCoord</text>
+  <text class="head" x="1082" y="152">JuiceFS / 对象存储</text>
+  <text class="head" x="1330" y="152">本地高速盘</text>
+
+  <line class="lane-line" x1="170" y1="190" x2="170" y2="900"/>
+  <line class="lane-line" x1="460" y1="190" x2="460" y2="900"/>
+  <line class="lane-line" x1="830" y1="190" x2="830" y2="900"/>
+  <line class="lane-line" x1="1170" y1="190" x2="1170" y2="900"/>
+  <line class="lane-line" x1="1380" y1="190" x2="1380" y2="900"/>
+
+  <rect class="box" x="80" y="210" width="180" height="54"/>
+  <text class="step" x="104" y="242">1. PutVectors</text>
+
+  <rect class="box" x="340" y="210" width="240" height="68"/>
+  <text class="step" x="366" y="242">2. 鉴权 / 配额检查</text>
+  <text class="text" x="366" y="264">校验 bucket 与租户</text>
+
+  <rect class="box" x="340" y="320" width="240" height="82"/>
+  <text class="step" x="366" y="352">3. 解析 bucket 路由</text>
+  <text class="text" x="366" y="374">bucket -&gt; collection</text>
+  <text class="text" x="366" y="396">必要时初始化元数据</text>
+
+  <rect class="box-blue" x="690" y="320" width="280" height="82"/>
+  <text class="step" x="718" y="352">4. Milvus Insert / Upsert</text>
+  <text class="text" x="718" y="374">进入 Proxy / WAL / Streaming 路径</text>
+  <text class="text" x="718" y="396">新增组件不自己写对象存储</text>
+
+  <rect class="box-blue" x="690" y="440" width="280" height="96"/>
+  <text class="step" x="718" y="472">5. Growing Segment</text>
+  <text class="text" x="718" y="494">数据先进入 growing segment</text>
+  <text class="text" x="718" y="516">删除与 flush 继续由 Milvus 管理</text>
+
+  <rect class="box-gold" x="1070" y="440" width="200" height="96"/>
+  <text class="step" x="1096" y="472">6. Flush 到对象存储</text>
+  <text class="text" x="1096" y="494">binlog / segment data</text>
+  <text class="text" x="1096" y="516">最终落到 JuiceFS 底座</text>
+
+  <rect class="box-blue" x="690" y="580" width="280" height="96"/>
+  <text class="step" x="718" y="612">7. 后台建索引</text>
+  <text class="text" x="718" y="634">默认：IVF_SQ8</text>
+  <text class="text" x="718" y="656">这一步应视为异步链路</text>
+
+  <rect class="box-gold" x="1070" y="580" width="200" height="96"/>
+  <text class="step" x="1096" y="612">8. 索引文件落盘</text>
+  <text class="text" x="1096" y="634">index artifact 写回对象存储</text>
+  <text class="text" x="1096" y="656">供后续 LoadCollection 使用</text>
+
+  <rect class="box-gray" x="1320" y="620" width="120" height="76"/>
+  <text class="step" x="1340" y="652">9. 非主链路</text>
+  <text class="text" x="1340" y="674">mmap / chunk cache</text>
+
+  <rect class="box" x="340" y="760" width="240" height="92"/>
+  <text class="step" x="366" y="792">产品层结论</text>
+  <text class="text" x="366" y="814">写入主链路 = 控制面路由 + Milvus 写路径</text>
+  <text class="text" x="366" y="836">索引构建应尽量异步化</text>
+
+  <path class="arrow" d="M 260 238 L 340 238"/>
+  <path class="arrow" d="M 460 278 L 460 320"/>
+  <path class="arrow" d="M 580 360 L 690 360"/>
+  <path class="arrow" d="M 830 402 L 830 440"/>
+  <path class="arrow" d="M 970 488 L 1070 488"/>
+  <path class="arrow" d="M 830 536 L 830 580"/>
+  <path class="arrow" d="M 970 628 L 1070 628"/>
+  <path class="arrow-soft" d="M 1170 676 C 1170 710, 1380 710, 1380 696"/>
+  <path class="arrow-soft" d="M 1380 620 C 1380 570, 830 570, 830 536"/>
+
+  <rect class="box" x="80" y="760" width="180" height="92"/>
+  <text class="step" x="104" y="792">注意</text>
+  <text class="text" x="104" y="814">用户看见的是写入成功</text>
+  <text class="text" x="104" y="836">不应等同于索引已完成</text>
+</svg>

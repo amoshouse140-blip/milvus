@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1040" width="1500" height="1040" role="img" aria-label="V2.3 Query Flow">
+  <title>V2.3 Query Flow</title>
+  <desc>Query flow showing load decision, Milvus query execution, JuiceFS reads and local disk cache behavior.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f6f7f4; }
+      .title { font: 700 30px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2d24; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #59675e; }
+      .lane-new { fill: #eef5f0; }
+      .lane-milvus { fill: #eef1fb; }
+      .lane-storage { fill: #faf2e3; }
+      .lane-disk { fill: #f1efe8; }
+      .sep { stroke: #bcc9c0; stroke-width: 2; }
+      .head { font: 700 18px 'Segoe UI', 'PingFang SC', sans-serif; fill: #223229; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .box { fill: #ffffff; stroke: #41584d; stroke-width: 2; rx: 16; ry: 16; }
+      .box-blue { fill: #ffffff; stroke: #5b6f9a; stroke-width: 2; rx: 16; ry: 16; }
+      .box-gold { fill: #fffdfa; stroke: #8f6d39; stroke-width: 2; rx: 16; ry: 16; }
+      .box-gray { fill: #ffffff; stroke: #6d6655; stroke-width: 2; rx: 16; ry: 16; }
+      .decision { fill: #fff8ea; stroke: #9c7f36; stroke-width: 2; }
+      .text { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #32433a; }
+      .step { font: 700 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #223229; }
+      .arrow { stroke: #42594d; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6c8175; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+      .lane-line { stroke: #a8b7ad; stroke-width: 2; stroke-dasharray: 8 8; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42594d"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8175"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="1040"/>
+  <text class="title" x="50" y="58">V2.3 Query 流程图</text>
+  <text class="subtitle" x="50" y="88">重点说明：查询必须走 LoadCollection 约束；未加载时由新增控制面触发加载，Milvus 再从 JuiceFS / 本地盘构建工作集。</text>
+
+  <rect class="lane-new" x="40" y="120" width="260" height="860"/>
+  <rect class="lane-new" x="300" y="120" width="320" height="860"/>
+  <rect class="lane-milvus" x="620" y="120" width="420" height="860"/>
+  <rect class="lane-storage" x="1040" y="120" width="260" height="860"/>
+  <rect class="lane-disk" x="1300" y="120" width="160" height="860"/>
+
+  <line class="sep" x1="300" y1="120" x2="300" y2="980"/>
+  <line class="sep" x1="620" y1="120" x2="620" y2="980"/>
+  <line class="sep" x1="1040" y1="120" x2="1040" y2="980"/>
+  <line class="sep" x1="1300" y1="120" x2="1300" y2="980"/>
+
+  <text class="head" x="112" y="152">Client</text>
+  <text class="head" x="380" y="152">新增控制面</text>
+  <text class="small" x="330" y="176">Gateway / Metadata / Router / LRU</text>
+  <text class="head" x="790" y="152">Milvus</text>
+  <text class="small" x="688" y="176">LoadCollection / QueryNode / IVF_SQ8 Search</text>
+  <text class="head" x="1082" y="152">JuiceFS / 对象存储</text>
+  <text class="head" x="1330" y="152">本地高速盘</text>
+
+  <line class="lane-line" x1="170" y1="190" x2="170" y2="960"/>
+  <line class="lane-line" x1="460" y1="190" x2="460" y2="960"/>
+  <line class="lane-line" x1="830" y1="190" x2="830" y2="960"/>
+  <line class="lane-line" x1="1170" y1="190" x2="1170" y2="960"/>
+  <line class="lane-line" x1="1380" y1="190" x2="1380" y2="960"/>
+
+  <rect class="box" x="80" y="210" width="180" height="54"/>
+  <text class="step" x="102" y="242">1. QueryVectors</text>
+
+  <rect class="box" x="340" y="210" width="240" height="68"/>
+  <text class="step" x="366" y="242">2. 鉴权 / bucket 解析</text>
+  <text class="text" x="366" y="264">查 bucket -&gt; collection 映射</text>
+
+  <polygon class="decision" points="460,330 560,390 460,450 360,390"/>
+  <text class="step" x="418" y="388">3. 已 load？</text>
+  <text class="small" x="402" y="410">看控制面缓存状态</text>
+
+  <rect class="box" x="340" y="500" width="240" height="82"/>
+  <text class="step" x="366" y="532">4A. 触发 LoadCollection</text>
+  <text class="text" x="366" y="554">未加载时由新增控制面调用</text>
+  <text class="text" x="366" y="576">这是 Phase 1 的首查成本来源</text>
+
+  <rect class="box-blue" x="690" y="500" width="280" height="96"/>
+  <text class="step" x="718" y="532">5A. Milvus LoadCollection</text>
+  <text class="text" x="718" y="554">QueryCoord / QueryNode 开始加载 segment 和 index</text>
+  <text class="text" x="718" y="576">这是 Milvus 硬约束，不是新增逻辑</text>
+
+  <rect class="box-gold" x="1070" y="500" width="200" height="96"/>
+  <text class="step" x="1096" y="532">6A. 读取对象存储文件</text>
+  <text class="text" x="1096" y="554">segment / index artifact</text>
+  <text class="text" x="1096" y="576">从 JuiceFS 底座取数</text>
+
+  <rect class="box-gray" x="1320" y="500" width="120" height="110"/>
+  <text class="step" x="1340" y="532">7A. 本地工作集</text>
+  <text class="text" x="1340" y="554">mmap / chunk cache</text>
+  <text class="text" x="1340" y="578">page cache 命中率</text>
+  <text class="text" x="1340" y="600">影响 RAM / 尾延迟</text>
+
+  <rect class="box-blue" x="690" y="680" width="280" height="96"/>
+  <text class="step" x="718" y="712">4B / 8. 执行搜索</text>
+  <text class="text" x="718" y="734">IVF_SQ8 Search</text>
+  <text class="text" x="718" y="756">按 nprobe 访问索引与数据</text>
+
+  <rect class="box" x="340" y="820" width="240" height="92"/>
+  <text class="step" x="366" y="852">9. 返回结果并更新 LRU</text>
+  <text class="text" x="366" y="874">记录热度，供后续 release 使用</text>
+  <text class="text" x="366" y="896">空闲后可能 ReleaseCollection</text>
+
+  <rect class="box" x="80" y="820" width="180" height="92"/>
+  <text class="step" x="106" y="852">10. 返回结果</text>
+  <text class="text" x="106" y="874">用户只看到 query 结果</text>
+  <text class="text" x="106" y="896">不感知 load / release</text>
+
+  <path class="arrow" d="M 260 238 L 340 238"/>
+  <path class="arrow" d="M 460 278 L 460 330"/>
+  <path class="arrow-soft" d="M 560 390 L 690 390"/>
+  <path class="arrow" d="M 460 450 L 460 500"/>
+  <path class="arrow" d="M 580 540 L 690 540"/>
+  <path class="arrow" d="M 970 548 L 1070 548"/>
+  <path class="arrow-soft" d="M 1270 560 L 1320 560"/>
+  <path class="arrow-soft" d="M 1380 610 C 1380 650, 970 650, 970 680"/>
+  <path class="arrow" d="M 830 596 L 830 680"/>
+  <path class="arrow" d="M 690 730 L 580 730"/>
+  <path class="arrow" d="M 340 866 L 260 866"/>
+
+  <text class="small" x="586" y="382">是：直接搜索</text>
+  <text class="small" x="388" y="470">否：先加载</text>
+
+  <rect class="box" x="1070" y="680" width="200" height="96"/>
+  <text class="step" x="1096" y="712">对象存储在查询里的角色</text>
+  <text class="text" x="1096" y="734">主要作为被 LoadCollection 读取的源</text>
+  <text class="text" x="1096" y="756">不是当前 Phase 1 的原生查询引擎</text>
+
+  <rect class="box" x="1320" y="820" width="120" height="92"/>
+  <text class="step" x="1340" y="852">Release 阶段</text>
+  <text class="text" x="1340" y="874">由新增 LRU 触发</text>
+  <text class="text" x="1340" y="896">真正执行在 Milvus</text>
+</svg>
