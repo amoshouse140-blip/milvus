@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 820" width="1400" height="820" role="img" aria-label="V2.3 Phase 1 Architecture">
+  <title>V2.3 Phase 1 Architecture</title>
+  <desc>Phase 1 preview architecture using per-bucket collections, IVF_SQ8 plus mmap, and load release LRU control.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f5f7f2; }
+      .title { font: 700 28px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1e2a22; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #4d5c52; }
+      .card { fill: #ffffff; stroke: #31493c; stroke-width: 2; rx: 18; ry: 18; }
+      .card-soft { fill: #eef3ea; stroke: #58705f; stroke-width: 2; rx: 18; ry: 18; }
+      .storage { fill: #f6efe2; stroke: #8c6d3c; stroke-width: 2; rx: 18; ry: 18; }
+      .accent { fill: #e6f0ea; stroke: #446457; stroke-width: 2; rx: 16; ry: 16; }
+      .warn { fill: #faf4dc; stroke: #9d7c2e; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 20px 'Segoe UI', 'PingFang SC', sans-serif; fill: #203128; }
+      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #2f3f35; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #4d5c52; }
+      .mono { font: 600 14px 'SFMono-Regular', Consolas, monospace; fill: #203128; }
+      .arrow { stroke: #334b3f; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6a7f72; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+      .group { fill: none; stroke: #9db2a4; stroke-width: 2; stroke-dasharray: 10 10; rx: 24; ry: 24; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334b3f"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6a7f72"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="820"/>
+  <text class="title" x="48" y="56">V2.3 Phase 1：可用版 Preview</text>
+  <text class="subtitle" x="48" y="84">一 bucket 一 collection，默认索引使用 IVF_SQ8 + mmap，按需 LoadCollection，空闲后由 LRU + TTL 释放。</text>
+
+  <rect class="card" x="60" y="170" width="210" height="110"/>
+  <text class="label" x="90" y="212">Client / SDK</text>
+  <text class="text" x="90" y="240">CreateBucket</text>
+  <text class="text" x="90" y="262">PutVectors / QueryVectors</text>
+
+  <rect class="card" x="340" y="150" width="260" height="150"/>
+  <text class="label" x="370" y="192">Bucket Gateway / API</text>
+  <text class="text" x="370" y="222">认证、配额、协议适配</text>
+  <text class="text" x="370" y="246">统一 bucket 语义</text>
+  <text class="mono" x="370" y="276">Create / Put / Query / Delete</text>
+
+  <rect class="card-soft" x="340" y="350" width="260" height="160"/>
+  <text class="label" x="370" y="392">Metadata Service</text>
+  <text class="text" x="370" y="422">bucket -&gt; collection 映射</text>
+  <text class="text" x="370" y="446">生命周期、配额、状态</text>
+  <text class="text" x="370" y="470">索引状态与加载状态</text>
+
+  <rect class="card-soft" x="670" y="150" width="270" height="150"/>
+  <text class="label" x="700" y="192">Bucket Router</text>
+  <text class="text" x="700" y="222">Phase 1：一 bucket 一 collection</text>
+  <text class="text" x="700" y="246">bucket_A -&gt; collection_A</text>
+  <text class="text" x="700" y="270">bucket_B -&gt; collection_B</text>
+
+  <rect class="card" x="670" y="350" width="270" height="160"/>
+  <text class="label" x="700" y="392">Milvus Adapter</text>
+  <text class="text" x="700" y="422">CreateIndex(index_type=IVF_SQ8)</text>
+  <text class="text" x="700" y="446">LoadCollection / ReleaseCollection</text>
+  <text class="text" x="700" y="470">Search / Delete / Flush</text>
+
+  <rect class="group" x="995" y="126" width="350" height="452" rx="24" ry="24"/>
+  <text class="label" x="1025" y="168">Milvus Standalone</text>
+  <text class="small" x="1025" y="192">Phase 1 默认后端：IVF_SQ8 + mmap</text>
+
+  <rect class="accent" x="1025" y="220" width="290" height="110"/>
+  <text class="label" x="1052" y="258">Per-Bucket Collections</text>
+  <text class="text" x="1052" y="286">collection_A / collection_B / ...</text>
+  <text class="text" x="1052" y="308">每个 bucket 独立 collection</text>
+
+  <rect class="accent" x="1025" y="358" width="290" height="100"/>
+  <text class="label" x="1052" y="396">IVF_SQ8 Backend</text>
+  <text class="text" x="1052" y="424">mmap 启用后以 page cache 为主</text>
+  <text class="text" x="1052" y="446">需要 nlist / nprobe 基准测试</text>
+
+  <rect class="warn" x="1025" y="486" width="290" height="70"/>
+  <text class="label" x="1052" y="526">Load/Release Controller</text>
+  <text class="text" x="1052" y="548">LRU + TTL 控制活跃加载集合</text>
+
+  <rect class="storage" x="210" y="620" width="360" height="128"/>
+  <text class="label" x="240" y="660">JuiceFS / Object Storage</text>
+  <text class="text" x="240" y="688">权威存储：binlog / index artifact / segment data</text>
+  <text class="text" x="240" y="712">不是 Phase 1 的冷查询执行引擎</text>
+
+  <rect class="storage" x="820" y="620" width="370" height="128"/>
+  <text class="label" x="850" y="660">High-Speed Local Disk</text>
+  <text class="text" x="850" y="688">mmap 相关本地路径 / chunk cache / page cache 工作集</text>
+  <text class="text" x="850" y="712">Phase 1 的关键验证点：随机读稳定性</text>
+
+  <path class="arrow" d="M 270 225 L 340 225"/>
+  <path class="arrow" d="M 470 300 L 470 350"/>
+  <path class="arrow" d="M 600 225 L 670 225"/>
+  <path class="arrow" d="M 805 300 L 805 350"/>
+  <path class="arrow" d="M 940 225 L 1025 225"/>
+  <path class="arrow" d="M 940 430 L 1025 430"/>
+  <path class="arrow-soft" d="M 1140 556 L 1140 620"/>
+  <path class="arrow-soft" d="M 1025 280 C 820 280, 820 650, 570 650"/>
+  <path class="arrow-soft" d="M 1025 405 C 910 405, 910 682, 820 682"/>
+
+  <rect class="warn" x="60" y="340" width="210" height="170"/>
+  <text class="label" x="88" y="380">Phase 1 边界</text>
+  <text class="text" x="88" y="410">- bucket 数配额</text>
+  <text class="text" x="88" y="434">- 活跃加载数硬控</text>
+  <text class="text" x="88" y="458">- 单 bucket 向量数上限</text>
+  <text class="text" x="88" y="482">- 首查延迟允许偏高</text>
+
+  <text class="small" x="60" y="784">目标：先交付一个“能用、可控、可 benchmark”的版本，而不是一步做成对象存储原生冷查询引擎。</text>
+</svg>

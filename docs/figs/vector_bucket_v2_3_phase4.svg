@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 820" width="1400" height="820" role="img" aria-label="V2.3 Phase 4 Research Directions">
+  <title>V2.3 Phase 4 Research Directions</title>
+  <desc>Phase 4 research directions after standard and performance tiers are in place.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f5f7f4; }
+      .title { font: 700 28px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2b23; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #56655d; }
+      .card { fill: #ffffff; stroke: #355045; stroke-width: 2; rx: 18; ry: 18; }
+      .card-soft { fill: #eef4ef; stroke: #5d7768; stroke-width: 2; rx: 18; ry: 18; }
+      .research { fill: #eef1f9; stroke: #526a93; stroke-width: 2; rx: 18; ry: 18; }
+      .warn { fill: #fbf3dc; stroke: #a08232; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 20px 'Segoe UI', 'PingFang SC', sans-serif; fill: #203127; }
+      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #324238; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #57675e; }
+      .arrow { stroke: #355045; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6d8275; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#355045"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d8275"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="820"/>
+  <text class="title" x="48" y="56">V2.3 Phase 4：研究路线</text>
+  <text class="subtitle" x="48" y="84">这一阶段不是近期承诺，而是在标准档与性能档跑稳之后，为下一代向量桶架构保留的演进方向。</text>
+
+  <rect class="card" x="490" y="240" width="420" height="220"/>
+  <text class="label" x="528" y="286">Current Product Core</text>
+  <text class="text" x="528" y="320">Phase 2 标准档：IVF_SQ8 + mmap + shared collections</text>
+  <text class="text" x="528" y="348">Phase 3 性能档：HNSW + hot_dedicated</text>
+  <text class="text" x="528" y="376">Gateway / Metadata / Graduation / Routing 已建立</text>
+  <text class="text" x="528" y="404">这是 Phase 4 之前必须先跑稳的底座</text>
+
+  <rect class="research" x="90" y="130" width="300" height="180"/>
+  <text class="label" x="120" y="172">研究方向 A</text>
+  <text class="text" x="120" y="204">对象存储原生冷查询执行模型</text>
+  <text class="text" x="120" y="232">目标：弱化甚至摆脱显式 LoadCollection</text>
+  <text class="text" x="120" y="260">关键词：lazy read / segment-level execution</text>
+  <text class="small" x="120" y="286">风险：需要深改 Milvus 查询模型</text>
+
+  <rect class="research" x="1010" y="130" width="300" height="180"/>
+  <text class="label" x="1040" y="172">研究方向 B</text>
+  <text class="text" x="1040" y="204">DISKANN 基础层</text>
+  <text class="text" x="1040" y="232">目标：提升标准档 recall 与大规模能力</text>
+  <text class="text" x="1040" y="260">前提：稳定高速本地盘 + 可接受构建链路</text>
+  <text class="small" x="1040" y="286">风险：build SLA 与混部随机读抖动</text>
+
+  <rect class="research" x="90" y="500" width="300" height="180"/>
+  <text class="label" x="120" y="542">研究方向 C</text>
+  <text class="text" x="120" y="574">Milvus 原生多 profile 支持</text>
+  <text class="text" x="120" y="602">目标：一个逻辑索引，多种物理 profile</text>
+  <text class="text" x="120" y="630">避免 collection 级多份副本与迁移</text>
+  <text class="small" x="120" y="656">风险：Coord / QueryNode / Index 生命周期复杂</text>
+
+  <rect class="research" x="1010" y="500" width="300" height="180"/>
+  <text class="label" x="1040" y="542">研究方向 D</text>
+  <text class="text" x="1040" y="574">更细粒度的热冷层调度</text>
+  <text class="text" x="1040" y="602">目标：segment/profile 级别而非 collection 级别</text>
+  <text class="text" x="1040" y="630">提升资源利用率与升降级灵活度</text>
+  <text class="small" x="1040" y="656">风险：调度器和状态机复杂度上升</text>
+
+  <rect class="warn" x="520" y="540" width="360" height="116"/>
+  <text class="label" x="550" y="580">Phase 4 共识</text>
+  <text class="text" x="550" y="608">- 不进入近期里程碑承诺</text>
+  <text class="text" x="550" y="632">- 需要独立 benchmark / prototype 验证</text>
+
+  <path class="arrow-soft" d="M 390 220 C 450 220, 470 240, 490 290"/>
+  <path class="arrow-soft" d="M 1010 220 C 950 220, 930 240, 910 290"/>
+  <path class="arrow-soft" d="M 390 590 C 450 590, 470 520, 490 420"/>
+  <path class="arrow-soft" d="M 1010 590 C 950 590, 930 520, 910 420"/>
+
+  <text class="small" x="48" y="770">Phase 4 的价值不是立刻交付，而是确保当前标准档 / 性能档架构不会把未来演进路线彻底堵死。</text>
+</svg>

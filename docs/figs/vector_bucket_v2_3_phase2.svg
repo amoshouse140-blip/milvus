@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 840" width="1400" height="840" role="img" aria-label="V2.3 Phase 2 Architecture">
+  <title>V2.3 Phase 2 Architecture</title>
+  <desc>Phase 2 architecture using shared collections, partition key, clustering compaction, and bucket-group load release.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f6f7f3; }
+      .title { font: 700 28px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1d2a21; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #55645b; }
+      .card { fill: #ffffff; stroke: #335044; stroke-width: 2; rx: 18; ry: 18; }
+      .card-soft { fill: #edf3ef; stroke: #5c7768; stroke-width: 2; rx: 18; ry: 18; }
+      .storage { fill: #f7efe0; stroke: #8a6c3a; stroke-width: 2; rx: 18; ry: 18; }
+      .accent { fill: #e3efe7; stroke: #47695a; stroke-width: 2; rx: 16; ry: 16; }
+      .warn { fill: #fbf3dc; stroke: #a38431; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 20px 'Segoe UI', 'PingFang SC', sans-serif; fill: #203228; }
+      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #314238; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #56665c; }
+      .mono { font: 600 14px 'SFMono-Regular', Consolas, monospace; fill: #203228; }
+      .arrow { stroke: #355144; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6b8174; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+      .group { fill: none; stroke: #9eb2a5; stroke-width: 2; stroke-dasharray: 10 10; rx: 24; ry: 24; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#355144"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b8174"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="840"/>
+  <text class="title" x="48" y="56">V2.3 Phase 2：多桶共表 + 路由优化</text>
+  <text class="subtitle" x="48" y="84">目标不是换索引，而是降低单位 bucket 的 collection 成本；代价是必须做迁移、重建和路由切换。</text>
+
+  <rect class="card" x="60" y="160" width="220" height="110"/>
+  <text class="label" x="92" y="202">Client / SDK</text>
+  <text class="text" x="92" y="230">Bucket 语义保持不变</text>
+  <text class="text" x="92" y="252">对用户仍透明</text>
+
+  <rect class="card" x="340" y="140" width="280" height="150"/>
+  <text class="label" x="370" y="182">Gateway + Metadata</text>
+  <text class="text" x="370" y="212">bucket 配额、路由规则、迁移状态</text>
+  <text class="text" x="370" y="236">标准档继续使用 IVF_SQ8</text>
+  <text class="text" x="370" y="260">bucket -&gt; bucket group -&gt; shared collection</text>
+
+  <rect class="card-soft" x="340" y="350" width="280" height="180"/>
+  <text class="label" x="370" y="392">Bucket Group Router</text>
+  <text class="text" x="370" y="422">small / medium / large group</text>
+  <text class="text" x="370" y="446">partition_key = bucket_id</text>
+  <text class="text" x="370" y="470">按 group 进行 Load/Release</text>
+  <text class="mono" x="370" y="500">bucket_A -&gt; shared_small_01</text>
+
+  <rect class="card-soft" x="680" y="140" width="300" height="150"/>
+  <text class="label" x="712" y="182">Migration / Rebuild Jobs</text>
+  <text class="text" x="712" y="212">从 per-bucket collection 迁到 shared collection</text>
+  <text class="text" x="712" y="236">重写数据、重建 IVF_SQ8、切路由</text>
+  <text class="text" x="712" y="260">这是 Phase 2 的真实工程量</text>
+
+  <rect class="group" x="1015" y="118" width="330" height="540" rx="24" ry="24"/>
+  <text class="label" x="1045" y="160">Milvus Standard Tier</text>
+  <text class="small" x="1045" y="184">共享 collection + partition_key + clustering compaction</text>
+
+  <rect class="accent" x="1045" y="220" width="270" height="110"/>
+  <text class="label" x="1072" y="260">Shared Collections</text>
+  <text class="text" x="1072" y="288">shared_small_* / shared_medium_*</text>
+  <text class="text" x="1072" y="310">bucket 按 group 复用 collection</text>
+
+  <rect class="accent" x="1045" y="360" width="270" height="116"/>
+  <text class="label" x="1072" y="400">Partition Pruning</text>
+  <text class="text" x="1072" y="428">partition_key = bucket_id</text>
+  <text class="text" x="1072" y="452">clustering compaction</text>
+  <text class="text" x="1072" y="474">segment prune 需要 benchmark 验证</text>
+
+  <rect class="warn" x="1045" y="506" width="270" height="122"/>
+  <text class="label" x="1072" y="546">Group Load / Release</text>
+  <text class="text" x="1072" y="574">load 单位从单 bucket 变成 bucket group</text>
+  <text class="text" x="1072" y="598">group 粒度选错会放大内存与首查成本</text>
+
+  <rect class="storage" x="120" y="650" width="390" height="130"/>
+  <text class="label" x="150" y="692">JuiceFS / Object Storage</text>
+  <text class="text" x="150" y="720">shared collection 的段文件、索引文件、迁移中间产物</text>
+  <text class="text" x="150" y="744">Phase 2 重点是压低 bucket 的管理成本，而不是做 0 RAM 冷档</text>
+
+  <rect class="storage" x="760" y="680" width="420" height="100"/>
+  <text class="label" x="790" y="720">High-Speed Local Disk</text>
+  <text class="text" x="790" y="748">mmap / chunk cache / page cache 继续为标准档提供本地加速</text>
+
+  <path class="arrow" d="M 280 215 L 340 215"/>
+  <path class="arrow" d="M 480 290 L 480 350"/>
+  <path class="arrow" d="M 620 215 L 680 215"/>
+  <path class="arrow" d="M 620 440 L 1015 440"/>
+  <path class="arrow" d="M 980 215 L 1045 215"/>
+  <path class="arrow-soft" d="M 830 290 C 900 330, 950 360, 1045 360"/>
+  <path class="arrow-soft" d="M 1178 628 L 1178 680"/>
+  <path class="arrow-soft" d="M 1045 300 C 900 300, 900 715, 510 715"/>
+
+  <rect class="warn" x="60" y="330" width="220" height="220"/>
+  <text class="label" x="88" y="370">Phase 2 关键代价</text>
+  <text class="text" x="88" y="402">- 不是仅改路由</text>
+  <text class="text" x="88" y="426">- 需要迁移与重建</text>
+  <text class="text" x="88" y="450">- 需要切换 metadata 映射</text>
+  <text class="text" x="88" y="474">- 需要验证 prune 是否足够好</text>
+  <text class="text" x="88" y="498">- 需要重新定义 load 粒度</text>
+
+  <text class="small" x="48" y="810">Phase 2 的价值：把“每个 bucket 都是一个重 collection”的成本打下来；这一步不是简单优化，而是架构转折点。</text>
+</svg>

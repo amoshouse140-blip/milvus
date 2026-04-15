@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 840" width="1400" height="840" role="img" aria-label="V2.3 Phase 3 Architecture">
+  <title>V2.3 Phase 3 Architecture</title>
+  <desc>Phase 3 architecture adding HNSW performance tier and automated graduation from standard IVF tier.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f5f6f2; }
+      .title { font: 700 28px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1e2b21; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #56635b; }
+      .card { fill: #ffffff; stroke: #355045; stroke-width: 2; rx: 18; ry: 18; }
+      .card-soft { fill: #edf4ef; stroke: #5a7666; stroke-width: 2; rx: 18; ry: 18; }
+      .storage { fill: #f7f0e0; stroke: #8b6a39; stroke-width: 2; rx: 18; ry: 18; }
+      .accent { fill: #e2efe7; stroke: #47685b; stroke-width: 2; rx: 16; ry: 16; }
+      .perf { fill: #e8eef8; stroke: #4d668b; stroke-width: 2; rx: 16; ry: 16; }
+      .warn { fill: #faf3dc; stroke: #9f7f31; stroke-width: 2; rx: 16; ry: 16; }
+      .label { font: 700 20px 'Segoe UI', 'PingFang SC', sans-serif; fill: #213127; }
+      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #324138; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #57665d; }
+      .arrow { stroke: #355045; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6c8174; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+      .group { fill: none; stroke: #9eb1a4; stroke-width: 2; stroke-dasharray: 10 10; rx: 24; ry: 24; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#355045"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8174"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="840"/>
+  <text class="title" x="48" y="56">V2.3 Phase 3：性能档（HNSW 毕业）</text>
+  <text class="subtitle" x="48" y="84">在标准档 IVF_SQ8 基础上增加 HNSW 性能档；通过热度统计和预算控制，给大 bucket / 热 bucket 提供低延迟路径。</text>
+
+  <rect class="card" x="60" y="160" width="220" height="110"/>
+  <text class="label" x="92" y="202">Client / SDK</text>
+  <text class="text" x="92" y="230">用户继续只看到 bucket</text>
+  <text class="text" x="92" y="252">不感知冷热层与档位</text>
+
+  <rect class="card" x="340" y="140" width="280" height="150"/>
+  <text class="label" x="370" y="182">Gateway + Metadata</text>
+  <text class="text" x="370" y="212">维护 bucket 当前档位</text>
+  <text class="text" x="370" y="236">standard / performance</text>
+  <text class="text" x="370" y="260">查询时按 active tier 路由</text>
+
+  <rect class="card-soft" x="340" y="340" width="280" height="210"/>
+  <text class="label" x="370" y="382">Heat / Graduation Manager</text>
+  <text class="text" x="370" y="412">收集 QPS、向量数、最近访问时间</text>
+  <text class="text" x="370" y="436">决定升档 / 降级 / 回迁</text>
+  <text class="text" x="370" y="460">后台重建 HNSW 或回落到 IVF_SQ8</text>
+  <text class="text" x="370" y="484">受 RAM 预算硬控</text>
+
+  <rect class="group" x="700" y="118" width="300" height="560" rx="24" ry="24"/>
+  <text class="label" x="728" y="160">Standard Tier</text>
+  <text class="small" x="728" y="184">IVF_SQ8 + mmap</text>
+
+  <rect class="accent" x="728" y="220" width="244" height="120"/>
+  <text class="label" x="754" y="260">Shared Collections</text>
+  <text class="text" x="754" y="288">shared_small / shared_medium</text>
+  <text class="text" x="754" y="312">sub-second，成本优先</text>
+
+  <rect class="warn" x="728" y="370" width="244" height="138"/>
+  <text class="label" x="754" y="410">Group Load / Release</text>
+  <text class="text" x="754" y="438">标准档仍以 bucket group 管理</text>
+  <text class="text" x="754" y="462">更省 RAM，但延迟上限低于 HNSW</text>
+  <text class="text" x="754" y="486">是默认承载层</text>
+
+  <rect class="group" x="1040" y="118" width="300" height="560" rx="24" ry="24"/>
+  <text class="label" x="1068" y="160">Performance Tier</text>
+  <text class="small" x="1068" y="184">HNSW + load 常驻</text>
+
+  <rect class="perf" x="1068" y="220" width="244" height="120"/>
+  <text class="label" x="1094" y="260">hot_dedicated_*</text>
+  <text class="text" x="1094" y="288">大 bucket / 热 bucket 独占 collection</text>
+  <text class="text" x="1094" y="312">目标延迟：ms 级</text>
+
+  <rect class="perf" x="1068" y="370" width="244" height="138"/>
+  <text class="label" x="1094" y="410">RAM Budget Controller</text>
+  <text class="text" x="1094" y="438">热档总量硬控</text>
+  <text class="text" x="1094" y="462">拒绝超预算毕业</text>
+  <text class="text" x="1094" y="486">必要时触发降级</text>
+
+  <rect class="storage" x="100" y="680" width="390" height="110"/>
+  <text class="label" x="130" y="720">JuiceFS / Object Storage</text>
+  <text class="text" x="130" y="748">标准档与性能档都以对象存储为权威数据源，迁移由后台 job 驱动</text>
+
+  <rect class="storage" x="820" y="710" width="430" height="80"/>
+  <text class="label" x="850" y="750">High-Speed Local Disk / RAM Working Set</text>
+  <text class="text" x="850" y="776">标准档吃本地 cache，性能档直接吃 RAM 和 HNSW 常驻索引</text>
+
+  <path class="arrow" d="M 280 215 L 340 215"/>
+  <path class="arrow" d="M 620 215 L 700 215"/>
+  <path class="arrow" d="M 620 245 L 1040 245"/>
+  <path class="arrow" d="M 620 445 L 700 445"/>
+  <path class="arrow" d="M 620 470 L 1040 470"/>
+  <path class="arrow-soft" d="M 850 508 C 850 590, 1190 590, 1190 370"/>
+  <path class="arrow-soft" d="M 1190 508 C 1190 590, 850 590, 850 370"/>
+  <path class="arrow-soft" d="M 850 508 C 760 620, 600 690, 490 730"/>
+  <path class="arrow-soft" d="M 1190 508 L 1190 710"/>
+
+  <rect class="warn" x="60" y="330" width="220" height="250"/>
+  <text class="label" x="88" y="370">Phase 3 关键机制</text>
+  <text class="text" x="88" y="402">- 热度统计</text>
+  <text class="text" x="88" y="426">- 升档与降级</text>
+  <text class="text" x="88" y="450">- 离线迁移与切换</text>
+  <text class="text" x="88" y="474">- RAM 预算控制</text>
+  <text class="text" x="88" y="498">- 防止少数大 bucket 吃光热档</text>
+
+  <text class="small" x="48" y="818">Phase 3 的意义：把 HNSW 从“默认承载层”降级为“高价值性能档”，既保留低延迟，也避免它提前吃掉 Phase 1 的资源预算。</text>
+</svg>

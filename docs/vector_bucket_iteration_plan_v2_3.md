@@ -237,6 +237,8 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 ### Phase 1：可用版 Preview
 
+![Phase 1 架构图](./figs/vector_bucket_v2_3_phase1.svg)
+
 交付内容：
 
 - Bucket API
@@ -266,6 +268,8 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 ### Phase 2：多桶共表 + 路由优化
 
+![Phase 2 架构图](./figs/vector_bucket_v2_3_phase2.svg)
+
 在 Phase 1 稳定后引入：
 
 - 共享 collection 模型
@@ -287,6 +291,8 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 ### Phase 3：性能档（HNSW 毕业）
 
+![Phase 3 架构图](./figs/vector_bucket_v2_3_phase3.svg)
+
 再增加：
 
 - `hot_dedicated_*` collection 模板
@@ -302,6 +308,8 @@ Phase 1 需要显式验证和配置的项至少包括：
 - 产品具备性能梯度
 
 ### Phase 4：研究路线
+
+![Phase 4 架构图](./figs/vector_bucket_v2_3_phase4.svg)
 
 保留但不承诺：
 
@@ -464,4 +472,3 @@ V2.3 的最终建议是：
 一句话总结：
 
 **V2.3 保留了 V2.2 最重要的判断：Phase 1 默认索引优先考虑 `IVF_SQ8 + mmap`；同时把 V2.2 里“复杂度完全相同”“Phase 2 无需迁移”这些过强表述修正成了可执行版本。**
-
