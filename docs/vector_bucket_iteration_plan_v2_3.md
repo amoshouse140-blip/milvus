@@ -17,7 +17,7 @@ V2.2 的主方向基本正确：
    - 但 `IVF_SQ8` 需要额外的参数调优和 recall 基准测试
 
 2. 不能说采用 `IVF_SQ8` 后，Phase 2 “不需要迁移/重建”  
-   因为从“一 bucket 一 collection”迁到“多桶共表”，即使索引类型不变，仍然需要：
+   因为从“一个逻辑 collection/index 对应一个物理 collection”迁到“多逻辑 collection/index 共表”，即使索引类型不变，仍然需要：
    - 数据迁移
    - 索引重建
    - 路由切换
@@ -44,15 +44,29 @@ V2.2 的主方向基本正确：
 - Pinecone 这类托管向量数据库
 - 通用在线毫秒级实时向量检索服务
 
-对外接口保持简单：
+对外接口保持简单，但资源模型要对齐业界：
 
 - `CreateBucket / DeleteBucket`
-- `PutVectors / UpsertVectors / DeleteVectors`
-- `QueryVectors(topK, filter)`
+- `CreateCollection(or Index) / DeleteCollection(or Index)`
+- `PutVectors(bucket, collection, ...)`
+- `UpsertVectors(bucket, collection, ...)`
+- `DeleteVectors(bucket, collection, ...)`
+- `QueryVectors(bucket, collection, topK, filter)`
+
+本文后续统一用：
+
+- **bucket**：资源容器、权限、配额、计费边界
+- **logical collection**：bucket 下真正的写入和查询单元
+
+这里的 `logical collection` 在阿里云 / AWS 的语义上可以近似理解为：
+
+- collection
+- index
+- index table
 
 设计原则：
 
-- 用户按 bucket 理解资源
+- 用户按 `bucket -> logical collection` 理解资源
 - 用户不感知底层索引类型
 - 产品可以演进后端和档位，但接口不变
 
@@ -111,7 +125,13 @@ V2.2 的主方向基本正确：
 
 ### 3.3 `partition_key` 的定位
 
-`partition_key = bucket_id` 依然有价值，但必须保守定义：
+`partition_key` 依然有价值，但必须保守定义。
+
+在纠正了资源模型之后，真正适合拿来做路由和 prune 的键不应是单独的 `bucket_id`，而应是：
+
+- `namespace_id = bucket_id + logical_collection_id`
+
+因此更准确的说法是：
 
 - 它是路由与 prune 优化手段
 - 不是 bucket 级物理隔离银弹
@@ -119,9 +139,9 @@ V2.2 的主方向基本正确：
 在当前版本下，它能和 clustering compaction 结合，提升 segment prune 效果。  
 但不能直接推导出：
 
-- 每个 bucket 都有独立物理切片
-- 每个 bucket 查询只扫自己的小索引文件
-- 多桶共表后冷桶天然 0 RAM 成本
+- 每个 logical collection 都有独立物理切片
+- 每个 logical collection 查询只扫自己的小索引文件
+- 多 logical collections 共表后天然 0 RAM 成本
 
 ### 3.4 JuiceFS 的定位
 
@@ -182,7 +202,7 @@ V2.3 继续采用下面这条路线：
 Client
   -> Bucket Gateway / API
   -> Metadata Service
-  -> Bucket Router           (Phase 1: bucket -> 独立 collection)
+  -> Namespace Router        (Phase 1: logical collection/index -> 独立 Milvus collection)
   -> Milvus Adapter
   -> IVF_SQ8 Backend (mmap)
   -> Load/Release Controller
@@ -194,11 +214,11 @@ Client
 
 Phase 1 实现原则：
 
-- 用户操作 bucket
-- 每个 bucket 映射到一个独立 collection
+- 用户操作 `bucket + logical collection`
+- 每个 logical collection/index 映射到一个独立的物理 Milvus collection
 - 默认后端索引使用 `IVF_SQ8`
 - 查询前按需 `LoadCollection`
-- 空闲 bucket 由 `TTL + LRU` 触发 `ReleaseCollection`
+- 空闲 logical collection 由 `TTL + LRU` 触发 `ReleaseCollection`
 
 ### 4.5 Phase 1 系统边界图
 
@@ -210,6 +230,37 @@ Phase 1 实现原则：
 - 哪些能力是直接复用 Milvus
 - JuiceFS / 对象存储在 Phase 1 里负责什么
 - 本地高速盘在 Phase 1 里承担什么角色
+- `bucket` 和 `logical collection` 在控制面与 Milvus 之间如何映射
+
+### 4.5.1 Phase 1 挂载目录建议
+
+当前建议把挂载关系明确成“**都是目录挂载**”，而不是抽象地写“有一块盘”：
+
+- `JuiceFS` 挂载目录  
+  例：`/mnt/jfs/milvus-root`
+  - 作用：作为 Milvus 的对象/文件存储根路径
+  - 内容：segment data、binlog、index artifact 等持久化文件
+
+- 本地高速盘挂载目录 1  
+  例：`/mnt/localssd/mmap`
+  - 作用：给 mmap 相关文件使用
+  - 内容：Milvus vector index / field mmap 相关本地文件
+
+- 本地高速盘挂载目录 2  
+  例：`/mnt/localssd/chunk-cache`
+  - 作用：给 chunk cache / 本地缓存使用
+  - 内容：Milvus 读取对象存储文件后的本地缓存工作集
+
+如果是容器部署，建议再做一层 bind mount，例如：
+
+- 宿主机 `/mnt/jfs/milvus-root` -> 容器内 `/var/lib/milvus-data`
+- 宿主机 `/mnt/localssd/mmap` -> 容器内 `/var/lib/milvus-mmap`
+- 宿主机 `/mnt/localssd/chunk-cache` -> 容器内 `/var/lib/milvus-cache`
+
+这里最重要的是角色分工：
+
+- `JuiceFS` 挂载目录：**权威数据**
+- 本地高速盘挂载目录：**本地加速工作集**
 
 ### 4.6 Insert 流程图
 
@@ -262,7 +313,8 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 - Bucket API
 - Metadata Service
-- bucket -> 独立 collection 映射
+- bucket 下 logical collection 的管理 API
+- `bucket + logical collection -> 物理 Milvus collection` 映射
 - `IVF_SQ8` 建索引
 - mmap 配置接入与验证
 - `LoadCollection / ReleaseCollection`
@@ -281,8 +333,10 @@ Phase 1 需要显式验证和配置的项至少包括：
 阶段目标：
 
 - 尽快做出可用版
-- 用户能按 bucket 写入、查询、删除
-- 热点 bucket 后续查询延迟稳定
+- 用户能创建 bucket
+- 用户能在 bucket 下创建 logical collection
+- 用户能按 `bucket + logical collection` 写入、查询、删除
+- 热点 logical collection 后续查询延迟稳定
 - RAM 在当前机器上可控
 
 ### Phase 2：多桶共表 + 路由优化
@@ -292,9 +346,9 @@ Phase 1 需要显式验证和配置的项至少包括：
 在 Phase 1 稳定后引入：
 
 - 共享 collection 模型
-- `partition_key = bucket_id`
+- `namespace_id = bucket_id + logical_collection_id`
 - clustering compaction + segment prune 验证
-- bucket group 粒度的 load/release
+- namespace group 粒度的 load/release
 - 索引类型继续使用 `IVF_SQ8`
 
 这一阶段的重点不是“换索引”，而是：
@@ -305,7 +359,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 但要明确：
 
 - 即使索引类型不变
-- 从“一 bucket 一 collection”迁到“多桶共表”
+- 从“一个 logical collection/index 对应一个物理 collection”迁到“多 logical collections/indexes 共表”
 - 仍然需要迁移、重建、切换
 
 ### Phase 3：性能档（HNSW 毕业）
@@ -317,7 +371,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 - `hot_dedicated_*` collection 模板
 - `HNSW + load 常驻`
 - 热度统计
-- 大 bucket / 热 bucket 自动毕业
+- 大 logical collection / 热 logical collection 自动毕业
 - 标准档 <-> 性能档离线迁移
 - 热档总量硬控
 
@@ -370,6 +424,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 - mmap page cache 命中率
 - JuiceFS 本地 cache 命中率
 - 并发压力
+- 活跃 logical collection 的数量
 
 这些数字不应当作为对外承诺。
 
@@ -390,9 +445,10 @@ Phase 1 需要显式验证和配置的项至少包括：
 Phase 1 建议主动限制：
 
 - bucket 总数配额
-- 活跃加载 bucket 数硬控
-- 单 bucket 向量数上限
-- 不承诺所有冷桶首查都在 sub-second
+- 每个 bucket 下 logical collection 数量配额
+- 活跃加载 logical collection 数硬控
+- 单 logical collection 向量数上限
+- 不承诺所有冷 logical collections 首查都在 sub-second
 
 因此更适合定义为：
 
@@ -407,8 +463,9 @@ Phase 1 建议主动限制：
 工作范围：
 
 - bucket API
+- logical collection API
 - metadata
-- bucket -> collection 映射
+- `bucket + logical collection -> physical Milvus collection` 映射
 - `IVF_SQ8` 索引管理
 - mmap 配置与验证
 - load/release 控制
@@ -432,8 +489,8 @@ Phase 1 建议主动限制：
 工作范围：
 
 - 共享 collection 模型
-- bucket group 路由
-- `partition_key` 和 clustering compaction 验证
+- namespace group 路由
+- `namespace_id` 和 clustering compaction 验证
 - 数据迁移与索引重建流程
 - 路由切换
 
@@ -458,16 +515,16 @@ Phase 1 建议主动限制：
 
 ### Phase 1 风险
 
-- 冷 bucket 首查延迟包含 `LoadCollection` 成本
+- 冷 logical collection 首查延迟包含 `LoadCollection` 成本
 - `IVF_SQ8` 对异常数据集的 recall 可能偏低
 - mmap 与 JuiceFS 本地 cache 的交互需要实测
-- collection 数量增长仍会带来元数据和调度成本
+- logical collection 数量增长仍会带来元数据和调度成本
 
 ### Phase 2 风险
 
 - 共享 collection 的隔离性和 prune 效果需要基准测试
 - `partition_key` 默认分区数和 clustering compaction 参数需要调优
-- bucket group 粒度选错会导致 load 单位过粗
+- namespace group 粒度选错会导致 load 单位过粗
 - 即使不换索引类型，迁移仍然是一个真实工程量
 
 ### Phase 3 风险

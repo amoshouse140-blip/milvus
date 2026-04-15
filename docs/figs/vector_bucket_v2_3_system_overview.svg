@@ -34,7 +34,7 @@
 
   <rect class="bg" x="0" y="0" width="1500" height="920"/>
   <text class="title" x="50" y="58">V2.3 Phase 1 系统边界图</text>
-  <text class="subtitle" x="50" y="88">重点回答四个问题：哪些是新增组件、哪些复用 Milvus、哪些由 JuiceFS / 对象存储承担、哪些落在本地高速盘。</text>
+  <text class="subtitle" x="50" y="88">重点回答五个问题：哪些是新增组件、哪些复用 Milvus、哪些由 JuiceFS / 对象存储承担、哪些落在本地高速盘、挂载的到底是什么目录。</text>
 
   <rect class="zone-new" x="50" y="130" width="340" height="690"/>
   <text class="label" x="78" y="170">新增组件（你要开发）</text>
@@ -47,13 +47,13 @@
 
   <rect class="card" x="80" y="350" width="280" height="120"/>
   <text class="label" x="108" y="388">Metadata Service</text>
-  <text class="text" x="108" y="418">bucket -&gt; collection 映射</text>
-  <text class="text" x="108" y="442">加载状态、索引状态、配额</text>
+  <text class="text" x="108" y="418">bucket + logical collection</text>
+  <text class="text" x="108" y="442">-&gt; physical Milvus collection 映射</text>
 
   <rect class="card" x="80" y="500" width="280" height="120"/>
-  <text class="label" x="108" y="538">Bucket Router</text>
-  <text class="text" x="108" y="568">Phase 1：一 bucket 一 collection</text>
-  <text class="mono" x="108" y="592">bucket_A -&gt; collection_A</text>
+  <text class="label" x="108" y="538">Namespace Router</text>
+  <text class="text" x="108" y="568">Phase 1：一个 logical collection</text>
+  <text class="mono" x="108" y="592">bucket_A + col_x -&gt; phy_col_ax</text>
 
   <rect class="card" x="80" y="650" width="280" height="140"/>
   <text class="label" x="108" y="688">Load/Release + LRU</text>
@@ -72,12 +72,12 @@
 
   <rect class="card-blue" x="460" y="350" width="410" height="120"/>
   <text class="label" x="488" y="388">Collection + Index</text>
-  <text class="text" x="488" y="418">Phase 1：每个 bucket 一个 collection</text>
-  <text class="text" x="488" y="442">默认索引：IVF_SQ8</text>
+  <text class="text" x="488" y="418">Phase 1：每个 logical collection</text>
+  <text class="text" x="488" y="442">对应一个 physical Milvus collection</text>
 
   <rect class="card-blue" x="460" y="500" width="410" height="120"/>
   <text class="label" x="488" y="538">Search / Query Execution</text>
-  <text class="text" x="488" y="568">执行 QueryVectors，管理 nlist / nprobe</text>
+  <text class="text" x="488" y="568">执行 QueryVectors(bucket, collection, ...)</text>
   <text class="text" x="488" y="592">是否 load 是 Milvus 硬约束</text>
 
   <rect class="card-blue" x="460" y="650" width="410" height="140"/>
@@ -97,13 +97,13 @@
 
   <rect class="card-gold" x="970" y="360" width="240" height="120"/>
   <text class="label" x="998" y="398">Bucket 底座</text>
-  <text class="text" x="998" y="428">对象命名空间、统一存储计费</text>
+  <text class="text" x="998" y="428">例：挂载目录 `/mnt/jfs/milvus-root`</text>
   <text class="text" x="998" y="452">不是 Phase 1 的查询引擎</text>
 
   <rect class="card-gold" x="970" y="510" width="240" height="150"/>
   <text class="label" x="998" y="548">它不负责</text>
-  <text class="text" x="998" y="578">- bucket API</text>
-  <text class="text" x="998" y="602">- 路由</text>
+  <text class="text" x="998" y="578">- bucket / collection API</text>
+  <text class="text" x="998" y="602">- 逻辑路由</text>
   <text class="text" x="998" y="626">- LoadCollection 管控</text>
 
   <rect class="zone-disk" x="1280" y="130" width="170" height="690"/>
@@ -112,13 +112,13 @@
 
   <rect class="card-gray" x="1305" y="210" width="120" height="120"/>
   <text class="label" x="1325" y="248">mmap Path</text>
-  <text class="text" x="1325" y="278">本地映射文件</text>
-  <text class="text" x="1325" y="302">相关目录</text>
+  <text class="text" x="1325" y="278">例：`/mnt/localssd/mmap`</text>
+  <text class="text" x="1325" y="302">vector index/field mmap</text>
 
   <rect class="card-gray" x="1305" y="360" width="120" height="140"/>
   <text class="label" x="1325" y="398">Chunk Cache</text>
-  <text class="text" x="1325" y="428">本地高速缓存</text>
-  <text class="text" x="1325" y="452">供 Milvus 读取</text>
+  <text class="text" x="1325" y="428">例：`/mnt/localssd/chunk-cache`</text>
+  <text class="text" x="1325" y="452">供 Milvus 本地缓存</text>
   <text class="text" x="1325" y="476">不是业务接口层</text>
 
   <rect class="card-gray" x="1305" y="530" width="120" height="150"/>
@@ -137,5 +137,5 @@
   <path class="arrow-soft" d="M 1210 430 L 1305 430"/>
 
   <rect class="pill-note" x="50" y="845" width="1390" height="38"/>
-  <text class="small" x="74" y="869">一句话：新增的是 bucket 控制面和 load/release 编排；Milvus 继续负责向量库核心执行；JuiceFS 继续负责权威存储；本地高速盘负责 mmap / chunk cache / page cache 的本地工作集。</text>
+  <text class="small" x="74" y="869">一句话：新增的是 bucket + logical collection 控制面和 load/release 编排；Milvus 继续负责向量库核心执行；JuiceFS 挂载目录负责权威存储；本地高速盘挂载目录负责 mmap / chunk cache / page cache 工作集。</text>
 </svg>

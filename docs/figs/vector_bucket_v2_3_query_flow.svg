@@ -62,11 +62,11 @@
   <line class="lane-line" x1="1380" y1="190" x2="1380" y2="960"/>
 
   <rect class="box" x="80" y="210" width="180" height="54"/>
-  <text class="step" x="102" y="242">1. QueryVectors</text>
+  <text class="step" x="90" y="242">1. QueryVectors(bucket, collection)</text>
 
   <rect class="box" x="340" y="210" width="240" height="68"/>
   <text class="step" x="366" y="242">2. 鉴权 / bucket 解析</text>
-  <text class="text" x="366" y="264">查 bucket -&gt; collection 映射</text>
+  <text class="text" x="348" y="264">查 bucket + logical collection 映射</text>
 
   <polygon class="decision" points="460,330 560,390 460,450 360,390"/>
   <text class="step" x="418" y="388">3. 已 load？</text>
@@ -89,7 +89,7 @@
 
   <rect class="box-gray" x="1320" y="500" width="120" height="110"/>
   <text class="step" x="1340" y="532">7A. 本地工作集</text>
-  <text class="text" x="1340" y="554">mmap / chunk cache</text>
+  <text class="text" x="1340" y="554">本地目录：mmap / chunk cache</text>
   <text class="text" x="1340" y="578">page cache 命中率</text>
   <text class="text" x="1340" y="600">影响 RAM / 尾延迟</text>
 

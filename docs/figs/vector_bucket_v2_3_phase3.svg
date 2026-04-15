@@ -60,7 +60,7 @@
 
   <rect class="warn" x="728" y="370" width="244" height="138"/>
   <text class="label" x="754" y="410">Group Load / Release</text>
-  <text class="text" x="754" y="438">标准档仍以 bucket group 管理</text>
+  <text class="text" x="754" y="438">标准档仍以 namespace group 管理</text>
   <text class="text" x="754" y="462">更省 RAM，但延迟上限低于 HNSW</text>
   <text class="text" x="754" y="486">是默认承载层</text>
 

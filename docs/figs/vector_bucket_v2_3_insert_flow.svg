@@ -61,16 +61,16 @@
   <line class="lane-line" x1="1380" y1="190" x2="1380" y2="900"/>
 
   <rect class="box" x="80" y="210" width="180" height="54"/>
-  <text class="step" x="104" y="242">1. PutVectors</text>
+  <text class="step" x="92" y="242">1. PutVectors(bucket, collection)</text>
 
   <rect class="box" x="340" y="210" width="240" height="68"/>
   <text class="step" x="366" y="242">2. 鉴权 / 配额检查</text>
   <text class="text" x="366" y="264">校验 bucket 与租户</text>
 
   <rect class="box" x="340" y="320" width="240" height="82"/>
-  <text class="step" x="366" y="352">3. 解析 bucket 路由</text>
-  <text class="text" x="366" y="374">bucket -&gt; collection</text>
-  <text class="text" x="366" y="396">必要时初始化元数据</text>
+  <text class="step" x="354" y="352">3. 解析 namespace 路由</text>
+  <text class="text" x="366" y="374">bucket + logical collection</text>
+  <text class="text" x="366" y="396">-&gt; physical Milvus collection</text>
 
   <rect class="box-blue" x="690" y="320" width="280" height="82"/>
   <text class="step" x="718" y="352">4. Milvus Insert / Upsert</text>
@@ -99,7 +99,7 @@
 
   <rect class="box-gray" x="1320" y="620" width="120" height="76"/>
   <text class="step" x="1340" y="652">9. 非主链路</text>
-  <text class="text" x="1340" y="674">mmap / chunk cache</text>
+  <text class="text" x="1340" y="674">本地目录：mmap / chunk cache</text>
 
   <rect class="box" x="340" y="760" width="240" height="92"/>
   <text class="step" x="366" y="792">产品层结论</text>

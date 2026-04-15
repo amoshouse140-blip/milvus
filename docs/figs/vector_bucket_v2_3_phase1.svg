@@ -29,7 +29,7 @@
 
   <rect class="bg" x="0" y="0" width="1400" height="820"/>
   <text class="title" x="48" y="56">V2.3 Phase 1：可用版 Preview</text>
-  <text class="subtitle" x="48" y="84">一 bucket 一 collection，默认索引使用 IVF_SQ8 + mmap，按需 LoadCollection，空闲后由 LRU + TTL 释放。</text>
+  <text class="subtitle" x="48" y="84">一个 logical collection/index 对应一个物理 Milvus collection，默认索引使用 IVF_SQ8 + mmap，按需 LoadCollection，空闲后由 LRU + TTL 释放。</text>
 
   <rect class="card" x="60" y="170" width="210" height="110"/>
   <text class="label" x="90" y="212">Client / SDK</text>
@@ -44,14 +44,14 @@
 
   <rect class="card-soft" x="340" y="350" width="260" height="160"/>
   <text class="label" x="370" y="392">Metadata Service</text>
-  <text class="text" x="370" y="422">bucket -&gt; collection 映射</text>
+  <text class="text" x="370" y="422">bucket + logical collection</text>
   <text class="text" x="370" y="446">生命周期、配额、状态</text>
   <text class="text" x="370" y="470">索引状态与加载状态</text>
 
   <rect class="card-soft" x="670" y="150" width="270" height="150"/>
   <text class="label" x="700" y="192">Bucket Router</text>
-  <text class="text" x="700" y="222">Phase 1：一 bucket 一 collection</text>
-  <text class="text" x="700" y="246">bucket_A -&gt; collection_A</text>
+  <text class="text" x="700" y="222">Phase 1：logical collection -&gt; 物理 collection</text>
+  <text class="text" x="700" y="246">bucket_A/col_x -&gt; phy_col_ax</text>
   <text class="text" x="700" y="270">bucket_B -&gt; collection_B</text>
 
   <rect class="card" x="670" y="350" width="270" height="160"/>
@@ -66,8 +66,8 @@
 
   <rect class="accent" x="1025" y="220" width="290" height="110"/>
   <text class="label" x="1052" y="258">Per-Bucket Collections</text>
-  <text class="text" x="1052" y="286">collection_A / collection_B / ...</text>
-  <text class="text" x="1052" y="308">每个 bucket 独立 collection</text>
+  <text class="text" x="1052" y="286">phy_col_ax / phy_col_ay / ...</text>
+  <text class="text" x="1052" y="308">每个 logical collection 独立物理 collection</text>
 
   <rect class="accent" x="1025" y="358" width="290" height="100"/>
   <text class="label" x="1052" y="396">IVF_SQ8 Backend</text>
@@ -85,7 +85,7 @@
 
   <rect class="storage" x="820" y="620" width="370" height="128"/>
   <text class="label" x="850" y="660">High-Speed Local Disk</text>
-  <text class="text" x="850" y="688">mmap 相关本地路径 / chunk cache / page cache 工作集</text>
+  <text class="text" x="850" y="688">示例目录：/mnt/localssd/mmap / /mnt/localssd/chunk-cache</text>
   <text class="text" x="850" y="712">Phase 1 的关键验证点：随机读稳定性</text>
 
   <path class="arrow" d="M 270 225 L 340 225"/>
@@ -102,7 +102,7 @@
   <text class="label" x="88" y="380">Phase 1 边界</text>
   <text class="text" x="88" y="410">- bucket 数配额</text>
   <text class="text" x="88" y="434">- 活跃加载数硬控</text>
-  <text class="text" x="88" y="458">- 单 bucket 向量数上限</text>
+  <text class="text" x="88" y="458">- 单 logical collection 向量数上限</text>
   <text class="text" x="88" y="482">- 首查延迟允许偏高</text>
 
   <text class="small" x="60" y="784">目标：先交付一个“能用、可控、可 benchmark”的版本，而不是一步做成对象存储原生冷查询引擎。</text>
