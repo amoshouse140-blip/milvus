@@ -100,6 +100,12 @@ localStorage.path          = /var/lib/milvus-cache
 
 ## 6. Phase 1：单 Collection 可用版
 
+![Phase 1 架构图](./figs/vector_bucket_v2_3_system_overview.svg)
+
+![Phase 1 Insert 流程图](./figs/vector_bucket_v2_3_insert_flow.svg)
+
+![Phase 1 Query 流程图](./figs/vector_bucket_v2_3_query_flow.svg)
+
 ### 6.1 物理模型
 
 - **一个 logical collection 映射到一个物理 Milvus collection**
@@ -261,6 +267,12 @@ POST   /v1/buckets/{bucket}/collections/{collection}/query
 
 ## 7. Phase 2：性能档分层版
 
+![Phase 2 架构图](./figs/vector_bucket_v2_3_phase3.svg)
+
+![Phase 2 Insert 流程图](./figs/vector_bucket_v2_3_phase3_insert.svg)
+
+![Phase 2 Query 流程图](./figs/vector_bucket_v2_3_phase3_query.svg)
+
 ### 7.1 要解决的问题
 
 标准档 IVF_SQ8 延迟 sub-second 够用，但少数大 / 热 logical collection 需要 ms 级延迟和更高 recall。做法是让这些 logical collection **毕业到性能档（HNSW + load 常驻）**。
@@ -348,6 +360,12 @@ Metadata 新增：
 - 24h 内同一 logical collection 不发生 ≥ 2 次 tier 变化
 
 ## 8. Phase 3：研究方向（不进入近期承诺）
+
+![Phase 3 架构图](./figs/vector_bucket_v2_3_phase4_arch.svg)
+
+![Phase 3 Insert 流程图](./figs/vector_bucket_v2_3_phase4_insert.svg)
+
+![Phase 3 Query 流程图](./figs/vector_bucket_v2_3_phase4_query.svg)
 
 - Milvus 原生"不 load 可查"执行模型（对象存储原生冷查询）
 - DISKANN 基础层
