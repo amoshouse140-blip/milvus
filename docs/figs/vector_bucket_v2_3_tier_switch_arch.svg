@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 920" width="1500" height="920" role="img" aria-label="V2.3 Phase 3 Tier Switch Architecture">
+  <title>V2.3 Phase 3 在线升降级架构图</title>
+  <desc>Phase 3 新增迁移协调器、状态机、双写路径与回滚窗口的系统边界图。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f5f7f4; }
+      .title { font: 700 30px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2d24; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .zone-new { fill: #eef5f0; stroke: #4e6f5f; stroke-width: 2.5; rx: 24; ry: 24; }
+      .zone-milvus { fill: #eef1fb; stroke: #5b6f9a; stroke-width: 2.5; rx: 24; ry: 24; }
+      .zone-storage { fill: #faf2e3; stroke: #8f6d39; stroke-width: 2.5; rx: 24; ry: 24; }
+      .zone-stage { fill: #f4ecef; stroke: #8a4a63; stroke-width: 2.5; rx: 24; ry: 24; }
+      .card { fill: #ffffff; stroke: #3d5449; stroke-width: 2; rx: 18; ry: 18; }
+      .card-blue { fill: #ffffff; stroke: #556f9a; stroke-width: 2; rx: 18; ry: 18; }
+      .card-gold { fill: #fffdfa; stroke: #8f6d39; stroke-width: 2; rx: 18; ry: 18; }
+      .card-rose { fill: #ffffff; stroke: #8a4a63; stroke-width: 2; rx: 18; ry: 18; }
+      .pill-new { fill: #d8eadf; stroke: #4e6f5f; stroke-width: 1.5; rx: 12; ry: 12; }
+      .pill-old { fill: #dbe4f5; stroke: #5b6f9a; stroke-width: 1.5; rx: 12; ry: 12; }
+      .pill-note { fill: #f9eecf; stroke: #9d7e2e; stroke-width: 1.5; rx: 12; ry: 12; }
+      .pill-stage { fill: #f2d8e2; stroke: #8a4a63; stroke-width: 1.5; rx: 12; ry: 12; }
+      .label { font: 700 22px 'Segoe UI', 'PingFang SC', sans-serif; fill: #213229; }
+      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #32433a; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .mono { font: 600 14px 'SFMono-Regular', Consolas, monospace; fill: #213229; }
+      .arrow { stroke: #42594d; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6c8175; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42594d"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8175"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="920"/>
+  <text class="title" x="50" y="58">V2.3 Phase 3 在线升降级架构图</text>
+  <text class="subtitle" x="50" y="88">在 Phase 2 的基础上新增：迁移协调器 + 状态机、双写路径、校验器、回滚窗口。源档与目标档在 Milvus 里以两个物理 collection 并存。</text>
+
+  <rect class="zone-new" x="50" y="130" width="360" height="690"/>
+  <text class="label" x="78" y="170">新增控制面</text>
+  <rect class="pill-new" x="270" y="144" width="106" height="28"/><text class="small" x="298" y="163">Phase 3 新增</text>
+
+  <rect class="card" x="80" y="210" width="300" height="120"/>
+  <text class="label" x="108" y="248">Tier Change API</text>
+  <text class="text" x="108" y="278">changeTier(bucket, lc, target)</text>
+  <text class="text" x="108" y="302">用户 / 运维手动触发</text>
+
+  <rect class="card" x="80" y="350" width="300" height="150"/>
+  <text class="label" x="108" y="388">Migration Coordinator</text>
+  <text class="text" x="108" y="418">驱动状态机</text>
+  <text class="mono" x="108" y="442">stable → upgrading → dual_write</text>
+  <text class="mono" x="108" y="466">→ cutover → cleaning → stable</text>
+
+  <rect class="card" x="80" y="520" width="300" height="130"/>
+  <text class="label" x="108" y="558">Scanner / Validator</text>
+  <text class="text" x="108" y="588">分页 scan + 断点续搬</text>
+  <text class="text" x="108" y="612">count + 抽样 topK 校验</text>
+  <text class="text" x="108" y="636">切前准入</text>
+
+  <rect class="card" x="80" y="670" width="300" height="130"/>
+  <text class="label" x="108" y="708">Dual-Write Router</text>
+  <text class="text" x="108" y="738">迁移期间写 src + dst</text>
+  <text class="text" x="108" y="762">查询按 tier 路由</text>
+  <text class="text" x="108" y="786">Phase 3a 可简化为禁写</text>
+
+  <rect class="zone-stage" x="450" y="130" width="380" height="690"/>
+  <text class="label" x="478" y="170">状态机（Metadata）</text>
+  <rect class="pill-stage" x="690" y="144" width="106" height="28"/><text class="small" x="718" y="163">CAS 持久化</text>
+
+  <rect class="card-rose" x="480" y="210" width="320" height="80"/>
+  <text class="label" x="508" y="258">stable</text>
+  <text class="text" x="630" y="258">tier 稳定，无迁移</text>
+
+  <rect class="card-rose" x="480" y="310" width="320" height="80"/>
+  <text class="label" x="508" y="358">upgrading</text>
+  <text class="text" x="630" y="358">建目标 + 搬存量</text>
+
+  <rect class="card-rose" x="480" y="410" width="320" height="80"/>
+  <text class="label" x="508" y="458">dual_writing</text>
+  <text class="text" x="630" y="458">双写，查询仍走源</text>
+
+  <rect class="card-rose" x="480" y="510" width="320" height="80"/>
+  <text class="label" x="508" y="558">cutover</text>
+  <text class="text" x="630" y="558">CAS 切路由</text>
+
+  <rect class="card-rose" x="480" y="610" width="320" height="80"/>
+  <text class="label" x="508" y="658">rollback_window</text>
+  <text class="text" x="630" y="658">24h 继续双写</text>
+
+  <rect class="card-rose" x="480" y="710" width="320" height="80"/>
+  <text class="label" x="508" y="758">cleaning</text>
+  <text class="text" x="630" y="758">drop 源 collection</text>
+
+  <rect class="zone-milvus" x="870" y="130" width="400" height="690"/>
+  <text class="label" x="898" y="170">Milvus（两物理 collection 并存）</text>
+  <rect class="pill-old" x="1160" y="144" width="106" height="28"/><text class="small" x="1188" y="163">复用</text>
+
+  <rect class="card-blue" x="900" y="210" width="340" height="150"/>
+  <text class="label" x="928" y="248">源档 collection</text>
+  <text class="mono" x="928" y="280">vb_{b}_{lc}  (IVF_SQ8)</text>
+  <text class="text" x="928" y="308">迁移期间持续接收写入</text>
+  <text class="text" x="928" y="332">回滚窗口内保留</text>
+
+  <rect class="card-blue" x="900" y="380" width="340" height="150"/>
+  <text class="label" x="928" y="418">目标档 collection</text>
+  <text class="mono" x="928" y="450">vbh_{b}_{lc}  (HNSW)</text>
+  <text class="text" x="928" y="478">建索引 + Load + Pin</text>
+  <text class="text" x="928" y="502">cutover 后承接查询</text>
+
+  <rect class="card-blue" x="900" y="550" width="340" height="130"/>
+  <text class="label" x="928" y="588">Pin / Unpin Controller</text>
+  <text class="text" x="928" y="618">性能档 collection 常驻</text>
+  <text class="text" x="928" y="642">LRU 跳过 pinned</text>
+
+  <rect class="card-blue" x="900" y="700" width="340" height="100"/>
+  <text class="label" x="928" y="738">Search Execution</text>
+  <text class="text" x="928" y="768">按当前 tier 选择物理 collection</text>
+
+  <rect class="zone-storage" x="1310" y="130" width="140" height="690"/>
+  <text class="label" x="1328" y="170">底座存储</text>
+  <rect class="card-gold" x="1320" y="210" width="120" height="150"/>
+  <text class="label" x="1338" y="248">JuiceFS</text>
+  <text class="text" x="1338" y="278">源 + 目标</text>
+  <text class="text" x="1338" y="302">两套 index</text>
+  <text class="text" x="1338" y="326">artifact</text>
+
+  <rect class="card-gold" x="1320" y="380" width="120" height="130"/>
+  <text class="label" x="1338" y="418">对账</text>
+  <text class="text" x="1338" y="448">双写失败</text>
+  <text class="text" x="1338" y="472">补偿队列</text>
+
+  <path class="arrow" d="M 380 265 L 480 250"/>
+  <path class="arrow" d="M 380 425 L 480 450"/>
+  <path class="arrow" d="M 380 585 L 480 550"/>
+  <path class="arrow" d="M 380 735 L 480 650"/>
+  <path class="arrow" d="M 800 285 L 900 285"/>
+  <path class="arrow" d="M 800 455 L 900 455"/>
+  <path class="arrow-soft" d="M 800 550 L 900 600"/>
+  <path class="arrow-soft" d="M 1240 285 L 1320 285"/>
+  <path class="arrow-soft" d="M 1240 455 L 1320 445"/>
+
+  <rect class="pill-note" x="50" y="845" width="1400" height="38"/>
+  <text class="small" x="74" y="869">一句话：Phase 3 引入迁移协调器 + 状态机，在 Milvus 中源档 / 目标档两个 collection 并存；Phase 3a 先做手动切换（维护窗口 + 无双写），Phase 3b 再做自动策略 + 在线双写。</text>
+</svg>

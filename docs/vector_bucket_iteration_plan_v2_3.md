@@ -265,7 +265,7 @@ POST   /v1/buckets/{bucket}/collections/{collection}/query
 
 未达标触发兜底：回退 HNSW 或下调产品承诺。
 
-## 7. Phase 2：性能档分层版
+## 7. Phase 2：性能档（创建时选档）
 
 ![Phase 2 架构图](./figs/vector_bucket_v2_3_phase3.svg)
 
@@ -275,13 +275,15 @@ POST   /v1/buckets/{bucket}/collections/{collection}/query
 
 ### 7.1 要解决的问题
 
-标准档 IVF_SQ8 延迟 sub-second 够用，但少数大 / 热 logical collection 需要 ms 级延迟和更高 recall。做法是让这些 logical collection **毕业到性能档（HNSW + load 常驻）**。
+标准档 `IVF_SQ8` 延迟 sub-second 够用，但少数大 / 热 logical collection 需要 ms 级延迟和更高 recall。
+
+Phase 2 的策略：**在创建 logical collection 时由用户显式指定 tier，一经创建不变**。运行中不支持 tier 切换（那是 Phase 3 的事）。
+
+这一版的核心收益是尽快把性能档能力上线并允许用户使用，避开在线迁移 / 双写 / 一致性校验这些复杂度。
 
 ### 7.2 物理模型扩展
 
-新增性能档 collection：
-
-| 档位 | collection 命名 | 索引 | load |
+| 档位 | collection 命名 | 索引 | load 策略 |
 | --- | --- | --- | --- |
 | 标准档 | `vb_{bucket}_{lc}` | `IVF_SQ8 + mmap` | 按需 load + LRU/TTL |
 | 性能档 | `vbh_{bucket}_{lc}` | `HNSW(M=16, efConstruction=200)` | **常驻**，不受 LRU 回收 |
@@ -292,88 +294,177 @@ POST   /v1/buckets/{bucket}/collections/{collection}/query
 - 标准档活跃 load 预算：3 GB
 - 性能档 HNSW 常驻：3 GB
 
-### 7.3 访问统计
+### 7.3 Metadata 扩展
 
-Metadata 新增：
+logical collection 记录新增：
 
-- `tier ∈ {standard, performance}`
-- `qps_1h_avg`, `qps_7d_avg`, `qps_1d_peak`
-- `vector_count`, `last_query_at`
-- `last_tier_change_at`
+- `tier ∈ {standard, performance}`（创建时确定，不可变）
+- `vector_count`, `est_mem_mb`（用于性能档预算校验）
 
-由 Controller 和后台 job 维护。
+不需要 `migrate_state`、`qps_*` 访问统计、`last_tier_change_at` 等字段——这些是 Phase 3 才用。
 
-### 7.4 毕业与降级规则
+### 7.4 API 变化
 
-**自动毕业**（每小时评估）：
+**创建 logical collection** 增加 `tier` 参数：
 
 ```
-候选条件（任一）：
-  - vector_count >= 50 万 AND qps_7d_avg >= 1
-  - qps_1d_peak >= 10
-  - 用户显式付费升档
-
-准入门槛（全部）：
-  - 性能档剩余预算 >= est_hnsw_mem(lc)
-  - now - last_tier_change_at >= 24h（防抖）
+POST /v1/buckets/{bucket}/collections
+{
+  "name": "...",
+  "dim": 768,
+  "metric": "COSINE",
+  "tier": "standard" | "performance"   // 默认 "standard"
+}
 ```
 
-**自动降级**（每小时评估）：
+- `tier` 一经指定不可变
+- 后续想换档位必须 `DeleteCollection` 后重建（数据自行导出导入）
+- 返回的 collection 元信息包含 `tier`，客户端可查询
+
+**查询 / 写入 / 删除 API 保持不变**：Namespace Router 按 `tier` 查 Metadata 得到物理 collection 名即可。
+
+### 7.5 性能档预算校验
+
+创建性能档 collection 时，Gateway 预先估算内存占用并校验：
 
 ```
-条件（全部）：
-  - qps_7d_avg < 0.1
-  - now - last_query_at > 3d
-  - 性能档预算占用 >= 90%
-  - now - last_tier_change_at >= 24h
+est_hnsw_mem = declared_max_vectors * dim * 4B * 1.5
+if pinned_sum + est_hnsw_mem > performance_budget:
+    return 429 "performance tier budget exhausted"
 ```
 
-**est_hnsw_mem**：`vector_count * dim * 4B * 1.5`（原始向量 + 图结构开销）。
+- 创建性能档 collection 必须声明 `max_vectors`（作为计费和预算依据）
+- 写入超过 `max_vectors` 时返回 429
+- 达到预算上限后新性能档 collection 申请被拒
 
-### 7.5 毕业流程
+### 7.6 Load/Release Controller 改造
 
-1. Metadata 标记 `migrate_state = upgrading`
-2. `CreateCollection(vbh_{b}_{lc}, schema)`
-3. 从标准档抽取该 logical collection 数据（scan + batch）
-4. 批量写入性能档 collection
-5. 建 HNSW 索引（异步，耗时可达几分钟）
-6. 索引完成后 `LoadCollection` 并常驻
-7. 双写阶段：写入同时落标准档和性能档，查询仍走标准档
-8. 数据校验（count、抽样 topK 对比）
-9. 切换路由 `tier = performance`；查询走 HNSW
-10. 双写保留 24h 后 `DropCollection` 标准档
+Controller 多一种"常驻"状态：
 
-降级是反向操作：先复制回标准档 → 建 IVF_SQ8 索引 → 切路由 → drop HNSW collection。
+```
+Controller.Pin(collection_name)      # 性能档创建后调用
+Controller.Unpin(collection_name)    # 性能档删除时调用
+```
 
-### 7.6 双写期一致性
+- Pinned collection 一经 load 永不 release
+- LRU 遍历时跳过 pinned
+- 启动时从 Metadata 扫出所有 `tier=performance` 的 collection，逐个 load 并 pin
 
-- 写入：双写任一失败 → 整体失败（客户端重试）
-- 查询：毕业期间优先读标准档（权威源）
-- 删除：双写删除；若某一侧失败，后台对账 job 补偿
+### 7.7 Phase 2 生命周期
 
-### 7.7 Phase 2 验收
+**创建性能档 logical collection**
+1. Gateway 校验 `tier=performance`，预算够
+2. Metadata 写入，`tier=performance, max_vectors=N`
+3. Milvus Adapter：`CreateCollection(vbh_{b}_{lc}, schema)`，建 HNSW 索引占位
+4. Controller.Pin(vbh_{b}_{lc})
+5. 返回 READY
+
+**写入**
+- Router 按 `tier` 查 Metadata → 物理 collection 名
+- 写前校验 `vector_count < max_vectors`
+- 直接写入目标 collection
+
+**查询**
+- Router 按 `tier` 路由
+- 性能档已常驻，无 load 成本
+
+**删除 logical collection**
+1. `ReleaseCollection + DropCollection`
+2. Controller.Unpin（如果是性能档）
+3. 预算释放
+
+### 7.8 Phase 2 验收标准
 
 - 性能档 logical collection 查询 p99 ≤ 20 ms
-- 毕业 / 降级期间查询可用性 100%
-- 毕业期间延迟劣化 ≤ 50%
+- 性能档不受 LRU 影响，始终常驻
+- 性能档创建预算校验正确，预算耗尽正确拒绝
 - 性能档总 logical collection 数上限 10-20（按 3 GB 预算 + 典型规模反推）
-- 24h 内同一 logical collection 不发生 ≥ 2 次 tier 变化
+- 标准档行为不受影响
 
-## 8. Phase 3：研究方向（不进入近期承诺）
+### 7.9 Phase 2 明确不做
 
-![Phase 3 架构图](./figs/vector_bucket_v2_3_phase4_arch.svg)
+- 在线 tier 切换（留给 Phase 3）
+- 访问统计与自动毕业 / 降级
+- 双写 / 一致性校验
+- 运行时调整 `max_vectors`
 
-![Phase 3 Insert 流程图](./figs/vector_bucket_v2_3_phase4_insert.svg)
+## 8. Phase 3：在线升降级
 
-![Phase 3 Query 流程图](./figs/vector_bucket_v2_3_phase4_query.svg)
+### 8.1 目标
+
+允许运行中的 logical collection 在 `standard` 和 `performance` 之间切换，而不需要 drop + 重建。
+
+两种切换方式：
+
+- **用户显式**：`POST .../collections/{lc}:changeTier {target_tier}`
+- **系统自动**：基于访问统计的毕业 / 降级
+
+### 8.2 分两步上线
+
+#### Phase 3a：手动切换（带维护窗口）
+
+**简化前提**：切换期间该 logical collection **禁止写入**（返回 503 + `Retry-After`），查询仍走源档。
+
+流程：
+
+1. 用户调 `changeTier`，Metadata 标记 `migrate_state = upgrading / downgrading`
+2. Router 对该 collection 挂维护态：写入返回 503
+3. 后台 worker 创建目标 collection，离线 scan 源 → 批量写入目标
+4. 目标建索引、load
+5. 数据校验（count + 抽样 topK 对比）
+6. CAS 切 Metadata 的 `tier` 和 `physical_collection`
+7. 解除维护态
+8. drop 源 collection
+
+**好处**：
+- 没有双写逻辑
+- 没有补偿对账
+- 没有一致性问题（禁写期间数据静止）
+
+**代价**：
+- 维护窗口 1-10 分钟（看数据量）
+- 适合对偶发切换可接受短暂禁写的场景
+
+#### Phase 3b：自动升降级 + 在线双写（按需）
+
+在 Phase 3a 稳定且有真实访问数据后再做：
+
+- 访问统计（`qps_1h_avg / qps_7d_avg / qps_1d_peak / last_query_at`）
+- 自动毕业 / 降级规则与防抖窗口
+- 切换期间的在线双写，零写入停机
+- 切换后 24h 回滚窗口
+- reconcile 补偿机制
+
+Phase 3b 只在 3a 上线后发现"维护窗口对用户有明显影响"时才做。
+
+### 8.3 Phase 3 验收
+
+**3a**：
+- 手动切换成功率 ≥ 99%
+- 维护窗口 ≤ 10 分钟（50 万向量规模）
+- 切换期间查询可用
+- 切换失败可回滚到源档
+
+**3b**（仅在启动时定义）：
+- 升降级期间写入可用性 100%
+- 自动毕业 / 降级规则符合业务预期
+- 24h 内不发生 ≥ 2 次 tier 变化
+
+## 9. Phase 4：研究方向（不进入近期承诺）
+
+![Phase 4 架构图](./figs/vector_bucket_v2_3_phase4_arch.svg)
+
+![Phase 4 Insert 流程图](./figs/vector_bucket_v2_3_phase4_insert.svg)
+
+![Phase 4 Query 流程图](./figs/vector_bucket_v2_3_phase4_query.svg)
 
 - Milvus 原生"不 load 可查"执行模型（对象存储原生冷查询）
 - DISKANN 基础层
 - Milvus 原生多 profile（同 collection 多索引并存）
 
-## 9. 容量估算（规划目标，待 benchmark 验证，不对外承诺）
+## 10. 容量估算（规划目标，待 benchmark 验证，不对外承诺）
 
-### 9.1 标准档（`IVF_SQ8 + mmap`，4 GB 预算）
+### 10.1 标准档（`IVF_SQ8 + mmap`，4 GB 预算）
 
 | 维度 | 活跃加载总量 |
 | --- | --- |
