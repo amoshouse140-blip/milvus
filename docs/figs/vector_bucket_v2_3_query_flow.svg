@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1040" width="1500" height="1040" role="img" aria-label="V2.3 Query Flow">
   <title>V2.3 Query Flow</title>
-  <desc>Query flow showing load decision, Milvus query execution, JuiceFS reads and local disk cache behavior.</desc>
+  <desc>Query flow showing load decision, Milvus query execution, reads from Milvus base object storage provided by JuiceFS, and local disk cache behavior.</desc>
   <defs>
     <style>
       .bg { fill: #f6f7f4; }
@@ -34,7 +34,7 @@
 
   <rect class="bg" x="0" y="0" width="1500" height="1040"/>
   <text class="title" x="50" y="58">V2.3 Query 流程图</text>
-  <text class="subtitle" x="50" y="88">重点说明：查询必须走 LoadCollection 约束；未加载时由新增控制面触发加载，Milvus 再从 JuiceFS / 本地盘构建工作集。</text>
+  <text class="subtitle" x="50" y="88">重点说明：查询必须走 LoadCollection 约束；未加载时由新增控制面触发加载，Milvus 再从底座对象存储和本地盘构建工作集。</text>
 
   <rect class="lane-new" x="40" y="120" width="260" height="860"/>
   <rect class="lane-new" x="300" y="120" width="320" height="860"/>
@@ -52,7 +52,7 @@
   <text class="small" x="330" y="176">Gateway / Metadata / Router / LRU</text>
   <text class="head" x="790" y="152">Milvus</text>
   <text class="small" x="688" y="176">LoadCollection / QueryNode / IVF_SQ8 Search</text>
-  <text class="head" x="1082" y="152">JuiceFS / 对象存储</text>
+  <text class="head" x="1058" y="152">Milvus 底座对象存储</text>
   <text class="head" x="1330" y="152">本地高速盘</text>
 
   <line class="lane-line" x1="170" y1="190" x2="170" y2="960"/>
@@ -83,9 +83,9 @@
   <text class="text" x="718" y="576">这是 Milvus 硬约束，不是新增逻辑</text>
 
   <rect class="box-gold" x="1070" y="500" width="200" height="96"/>
-  <text class="step" x="1096" y="532">6A. 读取对象存储文件</text>
+  <text class="step" x="1096" y="532">6A. 读取底座对象存储文件</text>
   <text class="text" x="1096" y="554">segment / index artifact</text>
-  <text class="text" x="1096" y="576">从 JuiceFS 底座取数</text>
+  <text class="text" x="1096" y="576">由 JuiceFS 提供给 Milvus</text>
 
   <rect class="box-gray" x="1320" y="500" width="120" height="110"/>
   <text class="step" x="1340" y="532">7A. 本地工作集</text>
@@ -124,7 +124,7 @@
   <text class="small" x="388" y="470">否：先加载</text>
 
   <rect class="box" x="1070" y="680" width="200" height="96"/>
-  <text class="step" x="1096" y="712">对象存储在查询里的角色</text>
+  <text class="step" x="1096" y="712">底座对象存储在查询里的角色</text>
   <text class="text" x="1096" y="734">主要作为被 LoadCollection 读取的源</text>
   <text class="text" x="1096" y="756">不是当前 Phase 1 的原生查询引擎</text>
 

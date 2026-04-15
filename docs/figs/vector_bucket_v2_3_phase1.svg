@@ -79,8 +79,8 @@
   <text class="text" x="1052" y="548">LRU + TTL 控制活跃加载集合</text>
 
   <rect class="storage" x="210" y="620" width="360" height="128"/>
-  <text class="label" x="240" y="660">JuiceFS / Object Storage</text>
-  <text class="text" x="240" y="688">权威存储：binlog / index artifact / segment data</text>
+  <text class="label" x="180" y="660">Milvus Base Object Storage (JuiceFS)</text>
+  <text class="text" x="240" y="688">binlog / index artifact / segment data</text>
   <text class="text" x="240" y="712">不是 Phase 1 的冷查询执行引擎</text>
 
   <rect class="storage" x="820" y="620" width="370" height="128"/>

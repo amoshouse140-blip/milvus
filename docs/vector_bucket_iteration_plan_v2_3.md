@@ -76,7 +76,7 @@ V2.2 的主方向基本正确：
 
 - HCI 平台上一台虚拟机：`8 vCPU / 16 GB RAM`
 - 对象存储服务与本产品混部
-- JuiceFS 是既有存储底座
+- Milvus 底座对象存储由 JuiceFS 提供
 - 有一块非 JuiceFS 的高速本地盘
 - 查询目标 `topK` 小，按 `1-30` 规划
 - 第一阶段不做 Milvus 内核深改
@@ -85,14 +85,14 @@ V2.2 的主方向基本正确：
 这意味着：
 
 - RAM 很紧
-- page cache、对象存储服务、Milvus 会争抢资源
+- page cache、Milvus 底座对象存储服务、Milvus 会争抢资源
 - 第一阶段必须优先选择“可交付、可验证”的路线
 
 ## 3. 当前 Milvus 的能力边界
 
 ### 3.1 查询前提：必须 `LoadCollection`
 
-当前 Milvus 不是“对象存储上索引文件按需读就能查”的系统。
+当前 Milvus 不是“Milvus 底座对象存储上索引文件按需读就能查”的系统。
 
 当前阶段必须接受这个硬约束：
 
@@ -102,7 +102,7 @@ V2.2 的主方向基本正确：
 
 因此，下面这个设想当前不能成立：
 
-- “`IVF_SQ8` 不 load，查询时直接从 JuiceFS 做冷查询”
+- “`IVF_SQ8` 不 load，查询时直接从 Milvus 底座对象存储做冷查询”
 
 ### 3.2 `load` 不等于“索引全进 RAM”
 
@@ -143,14 +143,25 @@ V2.2 的主方向基本正确：
 - 每个 logical collection 查询只扫自己的小索引文件
 - 多 logical collections 共表后天然 0 RAM 成本
 
-### 3.4 JuiceFS 的定位
+### 3.4 Milvus 底座对象存储的定位
 
-JuiceFS 仍然是：
+本文后续统一使用一个名词：
 
-- 权威存储底座
-- 本地 cache 底座
+- **Milvus 底座对象存储（由 JuiceFS 提供）**
 
-不是当前 Phase 1 的“冷查询执行引擎”。
+它在逻辑上就是同一个东西：
+
+- Milvus 的主持久化存储
+- Milvus 的底座存储
+- Milvus 的权威数据来源
+
+在你当前部署里，它通过 JuiceFS 提供给 Milvus，表现为一个挂载目录。  
+也就是说：
+
+- 逻辑角色：Milvus 底座对象存储
+- 部署形态：JuiceFS 挂载目录
+
+它不是当前 Phase 1 的“冷查询执行引擎”。
 
 ## 4. V2.3 推荐方案
 
@@ -208,8 +219,8 @@ Client
   -> Load/Release Controller
   -> LRU / TTL Cache Manager
 
-存储根      = JuiceFS
-本地高速盘  = chunk cache / mmap 相关本地路径
+Milvus 底座对象存储（由 JuiceFS 提供） = Milvus 主持久化存储
+本地高速盘                          = chunk cache / mmap 相关本地路径
 ```
 
 Phase 1 实现原则：
@@ -228,17 +239,24 @@ Phase 1 实现原则：
 
 - 哪些组件是新增的
 - 哪些能力是直接复用 Milvus
-- JuiceFS / 对象存储在 Phase 1 里负责什么
+- Milvus 底座对象存储（由 JuiceFS 提供）在 Phase 1 里负责什么
 - 本地高速盘在 Phase 1 里承担什么角色
 - `bucket` 和 `logical collection` 在控制面与 Milvus 之间如何映射
 
 ### 4.5.1 Phase 1 挂载目录建议
 
-当前建议把挂载关系明确成“**都是目录挂载**”，而不是抽象地写“有一块盘”：
+当前建议把挂载关系明确成“**都是目录挂载**”。
 
-- `JuiceFS` 挂载目录  
+这里要统一理解：
+
+- **Milvus 底座对象存储（由 JuiceFS 提供）**
+- 在部署层表现为一个 JuiceFS 挂载目录
+
+示例：
+
+- `Milvus 底座对象存储` 挂载目录  
   例：`/mnt/jfs/milvus-root`
-  - 作用：作为 Milvus 的对象/文件存储根路径
+  - 作用：作为 Milvus 主持久化存储根路径
   - 内容：segment data、binlog、index artifact 等持久化文件
 
 - 本地高速盘挂载目录 1  
@@ -249,7 +267,7 @@ Phase 1 实现原则：
 - 本地高速盘挂载目录 2  
   例：`/mnt/localssd/chunk-cache`
   - 作用：给 chunk cache / 本地缓存使用
-  - 内容：Milvus 读取对象存储文件后的本地缓存工作集
+  - 内容：Milvus 读取底座对象存储文件后的本地缓存工作集
 
 如果是容器部署，建议再做一层 bind mount，例如：
 
@@ -259,7 +277,7 @@ Phase 1 实现原则：
 
 这里最重要的是角色分工：
 
-- `JuiceFS` 挂载目录：**权威数据**
+- `Milvus 底座对象存储` 挂载目录：**权威数据**
 - 本地高速盘挂载目录：**本地加速工作集**
 
 ### 4.6 Insert 流程图
@@ -295,7 +313,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 
 - `nlist` / `nprobe` 的起步参数
 - recall 是否满足产品底线
-- mmap 与 JuiceFS 本地 cache 的交互
+- mmap 与 Milvus 底座对象存储本地 cache 的交互
 - `LoadCollection` 耗时在当前机器上的上界
 
 因此，V2.3 认为：
@@ -422,7 +440,7 @@ Phase 1 需要显式验证和配置的项至少包括：
 - `nlist`
 - `nprobe`
 - mmap page cache 命中率
-- JuiceFS 本地 cache 命中率
+- 底座对象存储本地 cache 命中率
 - 并发压力
 - 活跃 logical collection 的数量
 
@@ -517,7 +535,7 @@ Phase 1 建议主动限制：
 
 - 冷 logical collection 首查延迟包含 `LoadCollection` 成本
 - `IVF_SQ8` 对异常数据集的 recall 可能偏低
-- mmap 与 JuiceFS 本地 cache 的交互需要实测
+- mmap 与 Milvus 底座对象存储本地 cache 的交互需要实测
 - logical collection 数量增长仍会带来元数据和调度成本
 
 ### Phase 2 风险

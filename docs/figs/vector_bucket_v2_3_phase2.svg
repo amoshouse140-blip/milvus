@@ -76,7 +76,7 @@
   <text class="text" x="1072" y="598">group 粒度选错会放大内存与首查成本</text>
 
   <rect class="storage" x="120" y="650" width="390" height="130"/>
-  <text class="label" x="150" y="692">JuiceFS / Object Storage</text>
+  <text class="label" x="120" y="692">Milvus Base Object Storage (JuiceFS)</text>
   <text class="text" x="150" y="720">shared collection 的段文件、索引文件、迁移中间产物</text>
   <text class="text" x="150" y="744">Phase 2 重点是压低 bucket 的管理成本，而不是做 0 RAM 冷档</text>
 

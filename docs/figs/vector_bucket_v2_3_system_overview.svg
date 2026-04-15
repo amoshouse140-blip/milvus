@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 920" width="1500" height="920" role="img" aria-label="V2.3 System Overview">
   <title>V2.3 System Overview</title>
-  <desc>System boundary diagram showing new components, Milvus responsibilities, JuiceFS responsibilities, and local disk responsibilities in Phase 1.</desc>
+  <desc>System boundary diagram showing new components, Milvus responsibilities, Milvus base object storage provided by JuiceFS, and local disk responsibilities in Phase 1.</desc>
   <defs>
     <style>
       .bg { fill: #f5f7f4; }
@@ -34,7 +34,7 @@
 
   <rect class="bg" x="0" y="0" width="1500" height="920"/>
   <text class="title" x="50" y="58">V2.3 Phase 1 系统边界图</text>
-  <text class="subtitle" x="50" y="88">重点回答五个问题：哪些是新增组件、哪些复用 Milvus、哪些由 JuiceFS / 对象存储承担、哪些落在本地高速盘、挂载的到底是什么目录。</text>
+  <text class="subtitle" x="50" y="88">重点回答五个问题：哪些是新增组件、哪些复用 Milvus、哪些由 Milvus 底座对象存储（由 JuiceFS 提供）承担、哪些落在本地高速盘、挂载的到底是什么目录。</text>
 
   <rect class="zone-new" x="50" y="130" width="340" height="690"/>
   <text class="label" x="78" y="170">新增组件（你要开发）</text>
@@ -87,17 +87,17 @@
   <text class="mono" x="488" y="766">queryNode.mmap.vectorIndex / mmap.enabled</text>
 
   <rect class="zone-storage" x="940" y="130" width="300" height="690"/>
-  <text class="label" x="968" y="170">JuiceFS / 对象存储</text>
+  <text class="label" x="948" y="170">Milvus 底座对象存储</text>
   <rect class="pill-old" x="1100" y="144" width="106" height="28"/><text class="small" x="1128" y="163">现有底座</text>
 
   <rect class="card-gold" x="970" y="210" width="240" height="120"/>
-  <text class="label" x="998" y="248">权威存储</text>
+  <text class="label" x="998" y="248">由 JuiceFS 提供</text>
   <text class="text" x="998" y="278">binlog / index artifact / segment files</text>
   <text class="text" x="998" y="302">Milvus 最终都写回这里</text>
 
   <rect class="card-gold" x="970" y="360" width="240" height="120"/>
-  <text class="label" x="998" y="398">Bucket 底座</text>
-  <text class="text" x="998" y="428">例：挂载目录 `/mnt/jfs/milvus-root`</text>
+  <text class="label" x="998" y="398">部署形态</text>
+  <text class="text" x="998" y="428">JuiceFS 挂载目录：`/mnt/jfs/milvus-root`</text>
   <text class="text" x="998" y="452">不是 Phase 1 的查询引擎</text>
 
   <rect class="card-gold" x="970" y="510" width="240" height="150"/>
@@ -137,5 +137,5 @@
   <path class="arrow-soft" d="M 1210 430 L 1305 430"/>
 
   <rect class="pill-note" x="50" y="845" width="1390" height="38"/>
-  <text class="small" x="74" y="869">一句话：新增的是 bucket + logical collection 控制面和 load/release 编排；Milvus 继续负责向量库核心执行；JuiceFS 挂载目录负责权威存储；本地高速盘挂载目录负责 mmap / chunk cache / page cache 工作集。</text>
+  <text class="small" x="74" y="869">一句话：新增的是 bucket + logical collection 控制面和 load/release 编排；Milvus 继续负责向量库核心执行；Milvus 底座对象存储由 JuiceFS 提供并以挂载目录呈现；本地高速盘挂载目录负责 mmap / chunk cache / page cache 工作集。</text>
 </svg>

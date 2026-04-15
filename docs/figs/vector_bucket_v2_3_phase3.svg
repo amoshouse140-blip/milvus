@@ -80,8 +80,8 @@
   <text class="text" x="1094" y="486">必要时触发降级</text>
 
   <rect class="storage" x="100" y="680" width="390" height="110"/>
-  <text class="label" x="130" y="720">JuiceFS / Object Storage</text>
-  <text class="text" x="130" y="748">标准档与性能档都以对象存储为权威数据源，迁移由后台 job 驱动</text>
+  <text class="label" x="90" y="720">Milvus Base Object Storage (JuiceFS)</text>
+  <text class="text" x="130" y="748">标准档与性能档都以底座对象存储为权威数据源，迁移由后台 job 驱动</text>
 
   <rect class="storage" x="820" y="710" width="430" height="80"/>
   <text class="label" x="850" y="750">High-Speed Local Disk / RAM Working Set</text>
