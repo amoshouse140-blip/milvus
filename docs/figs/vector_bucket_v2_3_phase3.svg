@@ -1,109 +1,145 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 840" width="1400" height="840" role="img" aria-label="V2.3 Phase 3 Architecture">
-  <title>V2.3 Phase 3 Architecture</title>
-  <desc>Phase 3 architecture adding HNSW performance tier and automated graduation from standard IVF tier.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 920" width="1500" height="920" role="img" aria-label="V2.3 Phase 2 Architecture">
+  <title>V2.3 Phase 2 性能档（创建时选档）架构图</title>
+  <desc>Phase 2 新增性能档 HNSW，用户创建 logical collection 时显式选择 tier，创建后不可变。</desc>
   <defs>
     <style>
-      .bg { fill: #f5f6f2; }
-      .title { font: 700 28px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1e2b21; }
-      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #56635b; }
-      .card { fill: #ffffff; stroke: #355045; stroke-width: 2; rx: 18; ry: 18; }
-      .card-soft { fill: #edf4ef; stroke: #5a7666; stroke-width: 2; rx: 18; ry: 18; }
-      .storage { fill: #f7f0e0; stroke: #8b6a39; stroke-width: 2; rx: 18; ry: 18; }
-      .accent { fill: #e2efe7; stroke: #47685b; stroke-width: 2; rx: 16; ry: 16; }
-      .perf { fill: #e8eef8; stroke: #4d668b; stroke-width: 2; rx: 16; ry: 16; }
-      .warn { fill: #faf3dc; stroke: #9f7f31; stroke-width: 2; rx: 16; ry: 16; }
-      .label { font: 700 20px 'Segoe UI', 'PingFang SC', sans-serif; fill: #213127; }
-      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #324138; }
-      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #57665d; }
-      .arrow { stroke: #355045; stroke-width: 3; fill: none; marker-end: url(#arrow); }
-      .arrow-soft { stroke: #6c8174; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
-      .group { fill: none; stroke: #9eb1a4; stroke-width: 2; stroke-dasharray: 10 10; rx: 24; ry: 24; }
+      .bg { fill: #f5f7f4; }
+      .title { font: 700 30px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2d24; }
+      .subtitle { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .zone-new { fill: #eef5f0; stroke: #4e6f5f; stroke-width: 2.5; rx: 24; ry: 24; }
+      .zone-milvus { fill: #eef1fb; stroke: #5b6f9a; stroke-width: 2.5; rx: 24; ry: 24; }
+      .zone-storage { fill: #faf2e3; stroke: #8f6d39; stroke-width: 2.5; rx: 24; ry: 24; }
+      .zone-disk { fill: #f1efe8; stroke: #6d6655; stroke-width: 2.5; rx: 24; ry: 24; }
+      .card { fill: #ffffff; stroke: #3d5449; stroke-width: 2; rx: 18; ry: 18; }
+      .card-blue { fill: #ffffff; stroke: #556f9a; stroke-width: 2; rx: 18; ry: 18; }
+      .card-gold { fill: #fffdfa; stroke: #8f6d39; stroke-width: 2; rx: 18; ry: 18; }
+      .card-gray { fill: #ffffff; stroke: #6d6655; stroke-width: 2; rx: 18; ry: 18; }
+      .card-perf { fill: #f3f6ff; stroke: #4d668b; stroke-width: 2; rx: 18; ry: 18; }
+      .pill-new { fill: #d8eadf; stroke: #4e6f5f; stroke-width: 1.5; rx: 12; ry: 12; }
+      .pill-old { fill: #dbe4f5; stroke: #5b6f9a; stroke-width: 1.5; rx: 12; ry: 12; }
+      .pill-note { fill: #f9eecf; stroke: #9d7e2e; stroke-width: 1.5; rx: 12; ry: 12; }
+      .label { font: 700 22px 'Segoe UI', 'PingFang SC', sans-serif; fill: #213229; }
+      .text { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #32433a; }
+      .small { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .mono { font: 600 14px 'SFMono-Regular', Consolas, monospace; fill: #213229; }
+      .arrow { stroke: #42594d; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #6c8175; stroke-width: 2.5; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrowSoft); }
     </style>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#355045"/>
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42594d"/>
     </marker>
     <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8174"/>
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c8175"/>
     </marker>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="1400" height="840"/>
-  <text class="title" x="48" y="56">V2.3 Phase 3：性能档（HNSW 毕业）</text>
-  <text class="subtitle" x="48" y="84">在标准档 IVF_SQ8 基础上增加 HNSW 性能档；通过热度统计和预算控制，给大 logical collection / 热 logical collection 提供低延迟路径。</text>
+  <rect class="bg" x="0" y="0" width="1500" height="920"/>
+  <text class="title" x="50" y="58">V2.3 Phase 2 性能档架构图（创建时选档）</text>
+  <text class="subtitle" x="50" y="88">用户创建 logical collection 时显式选择 tier（standard / performance），创建后不可变。不做升降级、不做热度统计。</text>
 
-  <rect class="card" x="60" y="160" width="220" height="110"/>
-  <text class="label" x="92" y="202">Client / SDK</text>
-  <text class="text" x="92" y="230">用户继续只看到 bucket</text>
-  <text class="text" x="92" y="252">不感知冷热层与档位</text>
+  <!-- 新增控制面 -->
+  <rect class="zone-new" x="50" y="130" width="340" height="690"/>
+  <text class="label" x="78" y="170">新增控制面</text>
+  <rect class="pill-new" x="250" y="144" width="106" height="28"/><text class="small" x="265" y="163">Phase 2 变化</text>
 
-  <rect class="card" x="340" y="140" width="280" height="150"/>
-  <text class="label" x="370" y="182">Gateway + Metadata</text>
-  <text class="text" x="370" y="212">维护 bucket 当前档位</text>
-  <text class="text" x="370" y="236">standard / performance</text>
-  <text class="text" x="370" y="260">查询时按 active tier 路由</text>
+  <rect class="card" x="80" y="210" width="280" height="120"/>
+  <text class="label" x="108" y="248">Bucket Gateway / API</text>
+  <text class="text" x="108" y="278">CreateCollection 新增 tier 参数</text>
+  <text class="text" x="108" y="302">用户显式选 standard / performance</text>
 
-  <rect class="card-soft" x="340" y="340" width="280" height="210"/>
-  <text class="label" x="370" y="382">Heat / Graduation Manager</text>
-  <text class="text" x="370" y="412">收集 QPS、向量数、最近访问时间</text>
-  <text class="text" x="370" y="436">决定升档 / 降级 / 回迁</text>
-  <text class="text" x="370" y="460">后台重建 HNSW 或回落到 IVF_SQ8</text>
-  <text class="text" x="370" y="484">受 RAM 预算硬控</text>
+  <rect class="card" x="80" y="360" width="280" height="120"/>
+  <text class="label" x="108" y="398">Metadata Service</text>
+  <text class="text" x="108" y="428">记录 tier（创建后不可变）</text>
+  <text class="text" x="108" y="452">记录 max_vectors（性能档配额）</text>
 
-  <rect class="group" x="700" y="118" width="300" height="560" rx="24" ry="24"/>
-  <text class="label" x="728" y="160">Standard Tier</text>
-  <text class="small" x="728" y="184">IVF_SQ8 + mmap</text>
+  <rect class="card" x="80" y="510" width="280" height="120"/>
+  <text class="label" x="108" y="548">Namespace Router</text>
+  <text class="text" x="108" y="578">按 tier 路由到不同物理 collection</text>
+  <text class="mono" x="108" y="602">standard → vb_*  |  perf → vbh_*</text>
 
-  <rect class="accent" x="728" y="220" width="244" height="120"/>
-  <text class="label" x="754" y="260">Shared Collections</text>
-  <text class="text" x="754" y="288">shared_small / shared_medium</text>
-  <text class="text" x="754" y="312">sub-second，成本优先</text>
+  <rect class="card" x="80" y="660" width="280" height="140"/>
+  <text class="label" x="108" y="698">Load/Release Controller</text>
+  <text class="text" x="108" y="728">标准档：LRU + TTL（同 Phase 1）</text>
+  <text class="text" x="108" y="752">性能档：Pin 常驻，不受 LRU</text>
+  <text class="text" x="108" y="776">预算分两块：标准 3GB / 性能 3GB</text>
 
-  <rect class="warn" x="728" y="370" width="244" height="138"/>
-  <text class="label" x="754" y="410">Group Load / Release</text>
-  <text class="text" x="754" y="438">标准档仍以 namespace group 管理</text>
-  <text class="text" x="754" y="462">更省 RAM，但延迟上限低于 HNSW</text>
-  <text class="text" x="754" y="486">是默认承载层</text>
+  <!-- Milvus -->
+  <rect class="zone-milvus" x="430" y="130" width="500" height="690"/>
+  <text class="label" x="458" y="170">Milvus（两种物理 collection 并存）</text>
+  <rect class="pill-old" x="790" y="144" width="106" height="28"/><text class="small" x="818" y="163">复用</text>
 
-  <rect class="group" x="1040" y="118" width="300" height="560" rx="24" ry="24"/>
-  <text class="label" x="1068" y="160">Performance Tier</text>
-  <text class="small" x="1068" y="184">HNSW + load 常驻</text>
+  <rect class="card-blue" x="460" y="210" width="220" height="140"/>
+  <text class="label" x="488" y="248">标准档 collection</text>
+  <text class="mono" x="488" y="278">vb_{b}_{lc}</text>
+  <text class="text" x="488" y="308">IVF_SQ8 + mmap</text>
+  <text class="text" x="488" y="332">按需 load + LRU</text>
 
-  <rect class="perf" x="1068" y="220" width="244" height="120"/>
-  <text class="label" x="1094" y="260">hot_dedicated_*</text>
-  <text class="text" x="1094" y="288">大 logical collection / 热 logical collection 独占 collection</text>
-  <text class="text" x="1094" y="312">目标延迟：ms 级</text>
+  <rect class="card-perf" x="700" y="210" width="220" height="140"/>
+  <text class="label" x="728" y="248">性能档 collection</text>
+  <text class="mono" x="728" y="278">vbh_{b}_{lc}</text>
+  <text class="text" x="728" y="308">HNSW (M=16)</text>
+  <text class="text" x="728" y="332">load 常驻（Pin）</text>
 
-  <rect class="perf" x="1068" y="370" width="244" height="138"/>
-  <text class="label" x="1094" y="410">RAM Budget Controller</text>
-  <text class="text" x="1094" y="438">热档总量硬控</text>
-  <text class="text" x="1094" y="462">拒绝超预算毕业</text>
-  <text class="text" x="1094" y="486">必要时触发降级</text>
+  <rect class="card-blue" x="460" y="380" width="460" height="120"/>
+  <text class="label" x="488" y="418">预算校验</text>
+  <text class="text" x="488" y="448">创建性能档时检查：pinned_sum + est &lt; budget</text>
+  <text class="text" x="488" y="472">超预算拒绝创建（429）</text>
 
-  <rect class="storage" x="100" y="680" width="390" height="110"/>
-  <text class="label" x="90" y="720">Milvus Base Object Storage (JuiceFS)</text>
-  <text class="text" x="130" y="748">标准档与性能档都以底座对象存储为权威数据源，迁移由后台 job 驱动</text>
+  <rect class="card-blue" x="460" y="530" width="460" height="110"/>
+  <text class="label" x="488" y="568">Search / Query Execution</text>
+  <text class="text" x="488" y="598">标准档：Search(IVF_SQ8) sub-second</text>
+  <text class="text" x="488" y="622">性能档：Search(HNSW) ms 级</text>
 
-  <rect class="storage" x="820" y="710" width="430" height="80"/>
-  <text class="label" x="850" y="750">High-Speed Local Disk / RAM Working Set</text>
-  <text class="text" x="850" y="776">标准档吃本地 cache，性能档直接吃 RAM 和 HNSW 常驻索引</text>
+  <rect class="card-blue" x="460" y="670" width="460" height="130"/>
+  <text class="label" x="488" y="708">明确不做</text>
+  <text class="text" x="488" y="738">❌ 运行时 tier 切换</text>
+  <text class="text" x="488" y="762">❌ 热度统计 / 自动毕业 / 自动降级</text>
+  <text class="text" x="488" y="786">❌ 双写 / 迁移</text>
 
-  <path class="arrow" d="M 280 215 L 340 215"/>
-  <path class="arrow" d="M 620 215 L 700 215"/>
-  <path class="arrow" d="M 620 245 L 1040 245"/>
-  <path class="arrow" d="M 620 445 L 700 445"/>
-  <path class="arrow" d="M 620 470 L 1040 470"/>
-  <path class="arrow-soft" d="M 850 508 C 850 590, 1190 590, 1190 370"/>
-  <path class="arrow-soft" d="M 1190 508 C 1190 590, 850 590, 850 370"/>
-  <path class="arrow-soft" d="M 850 508 C 760 620, 600 690, 490 730"/>
-  <path class="arrow-soft" d="M 1190 508 L 1190 710"/>
+  <!-- 存储 -->
+  <rect class="zone-storage" x="970" y="130" width="270" height="690"/>
+  <text class="label" x="998" y="170">底座对象存储</text>
+  <rect class="pill-old" x="1100" y="144" width="106" height="28"/><text class="small" x="1128" y="163">JuiceFS</text>
 
-  <rect class="warn" x="60" y="330" width="220" height="250"/>
-  <text class="label" x="88" y="370">Phase 3 关键机制</text>
-  <text class="text" x="88" y="402">- 热度统计</text>
-  <text class="text" x="88" y="426">- 升档与降级</text>
-  <text class="text" x="88" y="450">- 离线迁移与切换</text>
-  <text class="text" x="88" y="474">- RAM 预算控制</text>
-  <text class="text" x="88" y="498">- 防止少数大 bucket 吃光热档</text>
+  <rect class="card-gold" x="1000" y="210" width="210" height="120"/>
+  <text class="label" x="1028" y="248">两种 collection</text>
+  <text class="text" x="1028" y="278">标准档 + 性能档</text>
+  <text class="text" x="1028" y="302">各自独立索引文件</text>
 
-  <text class="small" x="48" y="818">Phase 3 的意义：把 HNSW 从“默认承载层”降级为“高价值性能档”，既保留低延迟，也避免它提前吃掉 Phase 1 的资源预算。</text>
+  <rect class="card-gold" x="1000" y="360" width="210" height="100"/>
+  <text class="label" x="1028" y="398">挂载目录</text>
+  <text class="mono" x="1028" y="428">/mnt/jfs/milvus-root</text>
+
+  <!-- 本地盘 -->
+  <rect class="zone-disk" x="1280" y="130" width="170" height="690"/>
+  <text class="label" x="1308" y="170">本地高速盘</text>
+
+  <rect class="card-gray" x="1305" y="210" width="120" height="120"/>
+  <text class="label" x="1325" y="248">mmap</text>
+  <text class="text" x="1325" y="278">标准档索引</text>
+  <text class="text" x="1325" y="302">mmap 映射</text>
+
+  <rect class="card-gray" x="1305" y="360" width="120" height="120"/>
+  <text class="label" x="1325" y="398">chunk cache</text>
+  <text class="text" x="1325" y="428">标准档读缓存</text>
+
+  <rect class="card-gray" x="1305" y="510" width="120" height="100"/>
+  <text class="label" x="1325" y="548">RAM</text>
+  <text class="text" x="1325" y="578">性能档 HNSW</text>
+  <text class="text" x="1325" y="602">常驻索引</text>
+
+  <!-- 箭头 -->
+  <path class="arrow" d="M 360 265 L 460 265"/>
+  <path class="arrow" d="M 360 265 L 700 265"/>
+  <path class="arrow" d="M 360 420 L 460 420"/>
+  <path class="arrow" d="M 360 570 L 460 570"/>
+  <path class="arrow" d="M 360 730 L 460 730"/>
+  <path class="arrow" d="M 920 265 L 1000 265"/>
+  <path class="arrow" d="M 920 400 L 1000 400"/>
+  <path class="arrow-soft" d="M 920 580 L 1305 580"/>
+  <path class="arrow-soft" d="M 1210 280 L 1305 280"/>
+  <path class="arrow-soft" d="M 1210 400 L 1305 400"/>
+
+  <rect class="pill-note" x="50" y="845" width="1390" height="38"/>
+  <text class="small" x="74" y="869">一句话：Phase 2 = Phase 1 + 性能档。用户创建时选 tier，创建后不可变。标准档沿用 Phase 1（IVF_SQ8 + LRU），性能档新增（HNSW + Pin 常驻）。不做 tier 切换、热度统计、升降级。</text>
 </svg>

@@ -1,32 +1,98 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1450 900" width="1450" height="900" role="img" aria-label="Phase 3 Insert Flow">
-  <title>Phase 3 Insert Flow</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1450 700" width="1450" height="700" role="img" aria-label="V2.3 Phase 2 Insert Flow">
+  <title>V2.3 Phase 2 Insert 流程图</title>
+  <desc>Phase 2 写入流程：Router 按 Metadata 中的 tier 路由到标准档或性能档，无双写、无迁移。</desc>
   <defs>
     <style>
-      .bg{fill:#f6f7f4}.laneA{fill:#eef5f0}.laneB{fill:#eef1fb}.laneC{fill:#faf2e3}.laneD{fill:#f1efe8}.sep{stroke:#bcc9c0;stroke-width:2}
-      .head{font:700 18px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.small{font:400 13px 'Segoe UI','PingFang SC',sans-serif;fill:#5a685f}
-      .title{font:700 28px 'Segoe UI','PingFang SC',sans-serif;fill:#1f2d24}.sub{font:400 15px 'Segoe UI','PingFang SC',sans-serif;fill:#59675e}
-      .box{fill:#fff;stroke:#41584d;stroke-width:2;rx:16;ry:16}.boxb{fill:#fff;stroke:#5b6f9a;stroke-width:2;rx:16;ry:16}.boxg{fill:#fffdfa;stroke:#8f6d39;stroke-width:2;rx:16;ry:16}.boxd{fill:#fff;stroke:#6d6655;stroke-width:2;rx:16;ry:16}.boxp{fill:#f3f6ff;stroke:#5a6f9d;stroke-width:2;rx:16;ry:16}
-      .step{font:700 15px 'Segoe UI','PingFang SC',sans-serif;fill:#223229}.text{font:400 14px 'Segoe UI','PingFang SC',sans-serif;fill:#32433a}
-      .arrow{stroke:#42594d;stroke-width:3;fill:none;marker-end:url(#a)}.dash{stroke:#6c8175;stroke-width:2.5;fill:none;stroke-dasharray:8 8;marker-end:url(#b)}
+      .bg { fill: #f6f7f4; }
+      .laneA { fill: #eef5f0; }
+      .laneB { fill: #e8eef8; }
+      .sep { stroke: #bcc9c0; stroke-width: 2; }
+      .title { font: 700 28px 'Segoe UI', 'PingFang SC', sans-serif; fill: #1f2d24; }
+      .sub { font: 400 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #59675e; }
+      .head { font: 700 18px 'Segoe UI', 'PingFang SC', sans-serif; fill: #223229; }
+      .step { font: 700 15px 'Segoe UI', 'PingFang SC', sans-serif; fill: #223229; }
+      .text { font: 400 14px 'Segoe UI', 'PingFang SC', sans-serif; fill: #32433a; }
+      .small { font: 400 13px 'Segoe UI', 'PingFang SC', sans-serif; fill: #5a685f; }
+      .box { fill: #fff; stroke: #41584d; stroke-width: 2; rx: 16; ry: 16; }
+      .boxb { fill: #fff; stroke: #5b6f9a; stroke-width: 2; rx: 16; ry: 16; }
+      .boxp { fill: #f3f6ff; stroke: #4d668b; stroke-width: 2; rx: 16; ry: 16; }
+      .dec { fill: #fff8ea; stroke: #9c7f36; stroke-width: 2; }
+      .arrow { stroke: #42594d; stroke-width: 3; fill: none; marker-end: url(#a); }
+      .arrow-perf { stroke: #4d668b; stroke-width: 3; fill: none; marker-end: url(#ap); }
+      .pill { fill: #f9eecf; stroke: #9d7e2e; stroke-width: 1.5; rx: 12; ry: 12; }
     </style>
-    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#42594d"/></marker>
-    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6c8175"/></marker>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#42594d"/>
+    </marker>
+    <marker id="ap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4d668b"/>
+    </marker>
   </defs>
-  <rect class="bg" width="1450" height="900"/>
-  <text class="title" x="48" y="56">Phase 3 Insert 流程图</text>
-  <text class="sub" x="48" y="84">Phase 3 增加性能档后，写入先由新增控制面决定 active tier，再写入标准档或性能档。</text>
-  <rect class="laneA" x="40" y="120" width="300" height="740"/><rect class="laneB" x="340" y="120" width="520" height="740"/><rect class="laneC" x="860" y="120" width="340" height="740"/><rect class="laneD" x="1200" y="120" width="210" height="740"/>
-  <line class="sep" x1="340" y1="120" x2="340" y2="860"/><line class="sep" x1="860" y1="120" x2="860" y2="860"/><line class="sep" x1="1200" y1="120" x2="1200" y2="860"/>
-  <text class="head" x="120" y="152">新增控制面</text><text class="small" x="82" y="174">Gateway / Metadata / Graduation Manager</text>
-  <text class="head" x="580" y="152">Milvus</text><text class="small" x="468" y="174">Standard Tier + Performance Tier</text>
-  <text class="head" x="922" y="152">Milvus 底座对象存储</text><text class="head" x="1244" y="152">本地高速盘</text>
-  <rect class="box" x="70" y="220" width="240" height="64"/><text class="step" x="92" y="252">1. PutVectors(bucket, collection)</text><text class="text" x="92" y="274">用户仍不感知 tier</text>
-  <rect class="box" x="70" y="330" width="240" height="88"/><text class="step" x="92" y="362">2. 查 active tier</text><text class="text" x="92" y="384">standard or performance</text><text class="text" x="92" y="406">由 Metadata / Graduation Manager 维护</text>
-  <rect class="boxb" x="420" y="300" width="340" height="100"/><text class="step" x="446" y="332">3A. 标准档写入</text><text class="text" x="446" y="354">shared collection + IVF_SQ8</text><text class="text" x="446" y="376">适合大多数 logical collection</text>
-  <rect class="boxp" x="420" y="470" width="340" height="108"/><text class="step" x="446" y="502">3B. 性能档写入</text><text class="text" x="446" y="524">hot_dedicated_* + HNSW</text><text class="text" x="446" y="546">只给毕业的大 / 热 logical collection</text><text class="text" x="446" y="568">RAM 预算要硬控</text>
-  <rect class="box" x="70" y="500" width="240" height="108"/><text class="step" x="92" y="532">并行后台动作</text><text class="text" x="92" y="554">热度统计</text><text class="text" x="92" y="576">升档 / 降级判定</text><text class="text" x="92" y="598">不在请求主链路上</text>
-  <rect class="boxg" x="910" y="400" width="240" height="106"/><text class="step" x="936" y="432">4. 写回底座对象存储</text><text class="text" x="936" y="454">标准档与性能档最终都要落底座</text><text class="text" x="936" y="476">迁移也以底座对象存储为中转</text>
-  <rect class="boxd" x="1230" y="430" width="150" height="96"/><text class="step" x="1252" y="462">5. 本地工作集</text><text class="text" x="1252" y="484">IVF mmap / HNSW RAM</text><text class="text" x="1252" y="506">共同受预算约束</text>
-  <path class="arrow" d="M190 284 L190 330"/><path class="arrow" d="M310 374 L420 350"/><path class="arrow" d="M310 374 L420 524"/><path class="dash" d="M190 418 L190 500"/><path class="arrow" d="M760 350 L910 430"/><path class="arrow" d="M760 524 L910 476"/><path class="dash" d="M1150 478 L1230 478"/>
-  <text class="small" x="48" y="882">关键边界：Phase 3 新增的是 tier 选择、毕业与降级控制；Milvus 仍负责标准档和性能档的实际写入与索引管理。</text>
+
+  <rect class="bg" width="1450" height="700"/>
+  <text class="title" x="48" y="56">V2.3 Phase 2 Insert 流程图</text>
+  <text class="sub" x="48" y="84">用户创建时已选好 tier，写入时 Router 按 Metadata 路由到对应物理 collection。无双写、无迁移。</text>
+
+  <!-- 泳道标题 -->
+  <rect class="laneA" x="40" y="120" width="1370" height="230"/>
+  <text class="head" x="60" y="152">路径 A：标准档（tier = standard）</text>
+
+  <rect class="laneB" x="40" y="370" width="1370" height="230"/>
+  <text class="head" x="60" y="402">路径 B：性能档（tier = performance）</text>
+
+  <!-- 路径 A: 标准档 -->
+  <rect class="box" x="70" y="180" width="200" height="80"/>
+  <text class="step" x="98" y="218">1. Client</text>
+  <text class="text" x="98" y="242">PutVectors</text>
+
+  <rect class="box" x="310" y="180" width="210" height="80"/>
+  <text class="step" x="338" y="218">2. Gateway</text>
+  <text class="text" x="338" y="242">鉴权 + 配额</text>
+
+  <rect class="box" x="560" y="180" width="240" height="80"/>
+  <text class="step" x="588" y="218">3. Router</text>
+  <text class="text" x="588" y="242">tier=standard → vb_{b}_{lc}</text>
+
+  <rect class="boxb" x="840" y="180" width="240" height="80"/>
+  <text class="step" x="868" y="218">4. Milvus Insert</text>
+  <text class="text" x="868" y="242">写入 IVF_SQ8 collection</text>
+
+  <rect class="box" x="1120" y="180" width="250" height="80"/>
+  <text class="step" x="1148" y="218">5. 异步建索引</text>
+  <text class="text" x="1148" y="242">达阈值触发（同 Phase 1）</text>
+
+  <path class="arrow" d="M 270 220 L 310 220"/>
+  <path class="arrow" d="M 520 220 L 560 220"/>
+  <path class="arrow" d="M 800 220 L 840 220"/>
+  <path class="arrow" d="M 1080 220 L 1120 220"/>
+
+  <!-- 路径 B: 性能档 -->
+  <rect class="boxp" x="70" y="430" width="200" height="80"/>
+  <text class="step" x="98" y="468">1. Client</text>
+  <text class="text" x="98" y="492">PutVectors</text>
+
+  <rect class="boxp" x="310" y="430" width="210" height="80"/>
+  <text class="step" x="338" y="468">2. Gateway</text>
+  <text class="text" x="338" y="492">鉴权 + max_vectors 校验</text>
+
+  <rect class="boxp" x="560" y="430" width="240" height="80"/>
+  <text class="step" x="588" y="468">3. Router</text>
+  <text class="text" x="588" y="492">tier=performance → vbh_{b}_{lc}</text>
+
+  <rect class="boxp" x="840" y="430" width="240" height="80"/>
+  <text class="step" x="868" y="468">4. Milvus Insert</text>
+  <text class="text" x="868" y="492">写入 HNSW collection</text>
+
+  <rect class="boxp" x="1120" y="430" width="250" height="80"/>
+  <text class="step" x="1148" y="468">5. 索引自动维护</text>
+  <text class="text" x="1148" y="492">HNSW 增量更新</text>
+
+  <path class="arrow-perf" d="M 270 470 L 310 470"/>
+  <path class="arrow-perf" d="M 520 470 L 560 470"/>
+  <path class="arrow-perf" d="M 800 470 L 840 470"/>
+  <path class="arrow-perf" d="M 1080 470 L 1120 470"/>
+
+  <!-- 底部说明 -->
+  <rect class="pill" x="40" y="630" width="1370" height="38"/>
+  <text class="small" x="64" y="654">一句话：两条路径完全独立，Router 按 Metadata 中 tier 字段路由，无双写、无交叉。标准档写入和 Phase 1 完全一致，性能档多了 max_vectors 配额校验。</text>
 </svg>
