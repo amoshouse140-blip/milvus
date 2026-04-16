@@ -1,45 +1,45 @@
-# Vector Bucket Phase 1 Implementation Plan
+# Vector Bucket Phase 1 实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **给 Agent 执行者:** 必须使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务执行本计划。步骤使用 `- [ ]` 语法追踪进度。
 
-**Goal:** Build a Vector Bucket Gateway service that exposes a REST API for bucket/collection/vector CRUD and query operations, backed by Milvus Standalone with IVF_SQ8+mmap, including LRU/TTL-based Load/Release Controller, quota enforcement, and monitoring metrics.
+**目标:** 构建 Vector Bucket Gateway 服务，提供 REST API 实现 bucket/collection/vector 的 CRUD 和查询操作，底层对接 Milvus Standalone（IVF_SQ8+mmap），包含 LRU/TTL Load/Release 控制器、配额管控和监控指标。
 
-**Architecture:** A standalone Go HTTP service (`internal/vectorbucket/`) using Gin (already in go.mod), with a layered design: Gateway (HTTP handlers + auth + rate limiting) -> Metadata Service (SQLite-backed bucket/collection state) -> Namespace Router (logical->physical mapping) -> Load/Release Controller (LRU+TTL memory budget) -> Milvus Adapter (wraps `client/milvusclient`). The service runs in the same VM as Milvus Standalone, connecting via gRPC localhost.
+**架构:** 一个独立的 Go HTTP 服务（`internal/vectorbucket/`），使用 Gin 框架（go.mod 中已有），分层设计：Gateway（HTTP handler + 鉴权 + 限流）-> Metadata Service（SQLite 持久化 bucket/collection 状态）-> Namespace Router（逻辑名 -> 物理名映射）-> Load/Release Controller（LRU+TTL 内存预算管理）-> Milvus Adapter（封装 `client/milvusclient`）。服务与 Milvus Standalone 同 VM 部署，通过 gRPC localhost 连接。
 
-**Tech Stack:** Go, Gin HTTP framework, Milvus Go client (`client/milvusclient`), SQLite (via `modernc.org/sqlite` for CGo-free), Prometheus client_golang for metrics.
+**技术栈:** Go、Gin HTTP 框架、Milvus Go Client（`client/milvusclient`）、SQLite（`modernc.org/sqlite`，纯 Go 无 CGo）、Prometheus client_golang 指标。
 
 ---
 
-## File Structure
+## 文件结构
 
 ```
 internal/vectorbucket/
-  cmd/                          # Entry point
-    main.go                     # Service bootstrap
+  cmd/                          # 入口
+    main.go                     # 服务启动引导
   config/
-    config.go                   # Configuration structs + paramtable integration
+    config.go                   # 配置结构体 + 环境变量加载
   metadata/
-    store.go                    # MetadataStore interface
-    sqlite_store.go             # SQLite implementation
-    models.go                   # Bucket, LogicalCollection structs
+    store.go                    # MetadataStore 接口定义
+    sqlite_store.go             # SQLite 实现
+    models.go                   # Bucket、LogicalCollection 结构体
   router/
-    namespace_router.go         # Logical -> physical collection name resolution
+    namespace_router.go         # 逻辑名 -> 物理 Milvus collection 名解析
   adapter/
-    milvus_adapter.go           # Wraps milvusclient for collection/vector ops
+    milvus_adapter.go           # 封装 milvusclient，提供 collection/vector 操作
   controller/
-    load_controller.go          # LRU + TTL load/release logic
+    load_controller.go          # LRU + TTL load/release 逻辑
   gateway/
-    server.go                   # Gin engine setup, middleware
-    handlers_bucket.go          # Bucket CRUD handlers
-    handlers_collection.go      # Collection CRUD handlers
-    handlers_vector.go          # Vector put/upsert/delete handlers
-    handlers_query.go           # Query handler
-    middleware.go               # Auth, rate limiting, quota check
-    errors.go                   # Error response helpers
+    server.go                   # Gin 引擎配置、路由注册
+    handlers_bucket.go          # Bucket CRUD handler
+    handlers_collection.go      # Collection CRUD handler
+    handlers_vector.go          # Vector put/upsert/delete handler
+    handlers_query.go           # 查询 handler
+    middleware.go               # 鉴权、限流、配额中间件
+    errors.go                   # 统一错误响应
   quota/
-    quota.go                    # Quota enforcement logic
+    quota.go                    # 配额检查逻辑
   metrics/
-    metrics.go                  # Prometheus metric definitions
+    metrics.go                  # Prometheus 指标定义
 ```
 
 ```
@@ -62,18 +62,18 @@ internal/vectorbucket/
   quota/
     quota_test.go
   integration/
-    api_test.go                 # End-to-end integration tests
+    api_test.go                 # 端到端集成测试
 ```
 
 ---
 
-## Task 1: Project Scaffold + Configuration
+## 任务 1：项目脚手架 + 配置模块
 
-**Files:**
-- Create: `internal/vectorbucket/config/config.go`
-- Create: `internal/vectorbucket/cmd/main.go`
+**文件:**
+- 新建: `internal/vectorbucket/config/config.go`
+- 新建: `internal/vectorbucket/cmd/main.go`
 
-- [ ] **Step 1: Write the config test**
+- [ ] **步骤 1: 编写配置测试**
 
 ```go
 // internal/vectorbucket/config/config_test.go
@@ -106,12 +106,12 @@ func TestConfigFromEnv(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2: 运行测试确认失败**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/config/...`
-Expected: FAIL — package does not exist
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/config/...`
+预期: FAIL — package 不存在
 
-- [ ] **Step 3: Write config implementation**
+- [ ] **步骤 3: 实现配置模块**
 
 ```go
 // internal/vectorbucket/config/config.go
@@ -123,20 +123,20 @@ import (
 )
 
 type Config struct {
-	ListenAddr          string
-	MilvusAddr          string
-	SQLitePath          string
-	LoadBudgetMB        int
-	TTLSeconds          int
-	IndexBuildThreshold int
-	MaxBucketsPerTenant int
-	MaxBucketsGlobal    int
-	MaxCollPerBucket    int
-	MaxVectorsPerColl   int
-	MaxDim              int
-	WriteQPSPerColl     int
-	QueryQPSPerColl     int
-	MaxLoadedColls      int
+	ListenAddr          string // 服务监听地址
+	MilvusAddr          string // Milvus gRPC 地址
+	SQLitePath          string // SQLite 数据库路径
+	LoadBudgetMB        int    // 活跃 load 总内存预算（MB）
+	TTLSeconds          int    // 空闲 collection 自动 release 的 TTL（秒）
+	IndexBuildThreshold int    // 触发建索引的向量数阈值
+	MaxBucketsPerTenant int    // 单租户 bucket 上限
+	MaxBucketsGlobal    int    // 全局 bucket 上限
+	MaxCollPerBucket    int    // 单 bucket 下 collection 上限
+	MaxVectorsPerColl   int    // 单 collection 向量数上限
+	MaxDim              int    // 最大维度
+	WriteQPSPerColl     int    // 单 collection 写入 QPS 上限
+	QueryQPSPerColl     int    // 单 collection 查询 QPS 上限
+	MaxLoadedColls      int    // 同时 loaded 的 collection 硬上限
 }
 
 func DefaultConfig() Config {
@@ -183,12 +183,12 @@ func LoadConfig() Config {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4: 运行测试确认通过**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/config/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/config/...`
+预期: PASS
 
-- [ ] **Step 5: Write minimal main.go placeholder**
+- [ ] **步骤 5: 编写 main.go 占位文件**
 
 ```go
 // internal/vectorbucket/cmd/main.go
@@ -206,12 +206,12 @@ func main() {
 }
 ```
 
-- [ ] **Step 6: Verify it compiles**
+- [ ] **步骤 6: 验证编译通过**
 
-Run: `cd /root/xty/milvus && go build ./internal/vectorbucket/cmd/`
-Expected: Success, no errors
+运行: `cd /root/xty/milvus && go build ./internal/vectorbucket/cmd/`
+预期: 成功，无错误
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7: 提交**
 
 ```bash
 git add internal/vectorbucket/config/ internal/vectorbucket/cmd/
@@ -222,13 +222,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Metadata Models + Store Interface
+## 任务 2：Metadata 模型 + Store 接口
 
-**Files:**
-- Create: `internal/vectorbucket/metadata/models.go`
-- Create: `internal/vectorbucket/metadata/store.go`
+**文件:**
+- 新建: `internal/vectorbucket/metadata/models.go`
+- 新建: `internal/vectorbucket/metadata/store.go`
 
-- [ ] **Step 1: Write model structs and store interface**
+- [ ] **步骤 1: 编写模型结构体和 Store 接口**
 
 ```go
 // internal/vectorbucket/metadata/models.go
@@ -263,19 +263,19 @@ type Bucket struct {
 }
 
 type LogicalCollection struct {
-	ID              string
-	BucketID        string
-	Name            string
-	Dim             int
-	Metric          string // "COSINE" or "L2"
-	Status          CollectionStatus
-	PhysicalName    string // "vb_{bucket_id}_{lc_id}"
-	IndexBuilt      bool
-	VectorCount     int64
-	EstMemMB        float64
-	LastAccessAt    time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID           string
+	BucketID     string
+	Name         string
+	Dim          int
+	Metric       string // "COSINE" 或 "L2"
+	Status       CollectionStatus
+	PhysicalName string // "vb_{bucket_id}_{lc_id}"
+	IndexBuilt   bool
+	VectorCount  int64
+	EstMemMB     float64
+	LastAccessAt time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 ```
 
@@ -286,7 +286,7 @@ package metadata
 import "context"
 
 type Store interface {
-	// Bucket operations
+	// Bucket 操作
 	CreateBucket(ctx context.Context, b *Bucket) error
 	GetBucket(ctx context.Context, id string) (*Bucket, error)
 	GetBucketByName(ctx context.Context, name string) (*Bucket, error)
@@ -296,7 +296,7 @@ type Store interface {
 	CountBuckets(ctx context.Context) (int, error)
 	CountBucketsByOwner(ctx context.Context, owner string) (int, error)
 
-	// Collection operations
+	// Collection 操作
 	CreateCollection(ctx context.Context, c *LogicalCollection) error
 	GetCollection(ctx context.Context, bucketID, name string) (*LogicalCollection, error)
 	GetCollectionByID(ctx context.Context, id string) (*LogicalCollection, error)
@@ -308,18 +308,18 @@ type Store interface {
 	DeleteCollection(ctx context.Context, id string) error
 	CountCollections(ctx context.Context, bucketID string) (int, error)
 
-	// Init and Close
+	// 初始化和关闭
 	Init(ctx context.Context) error
 	Close() error
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [ ] **步骤 2: 验证编译通过**
 
-Run: `cd /root/xty/milvus && go build ./internal/vectorbucket/metadata/`
-Expected: Success
+运行: `cd /root/xty/milvus && go build ./internal/vectorbucket/metadata/`
+预期: 成功
 
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3: 提交**
 
 ```bash
 git add internal/vectorbucket/metadata/models.go internal/vectorbucket/metadata/store.go
@@ -330,19 +330,19 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 3: SQLite Metadata Store Implementation
+## 任务 3：SQLite Metadata Store 实现
 
-**Files:**
-- Create: `internal/vectorbucket/metadata/sqlite_store.go`
-- Create: `internal/vectorbucket/metadata/sqlite_store_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/metadata/sqlite_store.go`
+- 新建: `internal/vectorbucket/metadata/sqlite_store_test.go`
 
-**Note:** Uses `modernc.org/sqlite` (pure Go, no CGo). Run `go get modernc.org/sqlite` first.
+**说明:** 使用 `modernc.org/sqlite`（纯 Go，无 CGo 依赖）。需先执行 `go get modernc.org/sqlite`。
 
-- [ ] **Step 1: Add SQLite dependency**
+- [ ] **步骤 1: 添加 SQLite 依赖**
 
-Run: `cd /root/xty/milvus && go get modernc.org/sqlite`
+运行: `cd /root/xty/milvus && go get modernc.org/sqlite`
 
-- [ ] **Step 2: Write failing tests for bucket CRUD**
+- [ ] **步骤 2: 编写 Bucket CRUD 失败测试**
 
 ```go
 // internal/vectorbucket/metadata/sqlite_store_test.go
@@ -444,12 +444,12 @@ func TestDeleteBucket(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **步骤 3: 运行测试确认失败**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/metadata/...`
-Expected: FAIL — `NewSQLiteStore` undefined
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/metadata/...`
+预期: FAIL — `NewSQLiteStore` 未定义
 
-- [ ] **Step 4: Implement SQLiteStore for bucket operations**
+- [ ] **步骤 4: 实现 SQLiteStore（Bucket + Collection 全部操作）**
 
 ```go
 // internal/vectorbucket/metadata/sqlite_store.go
@@ -521,7 +521,7 @@ func (s *SQLiteStore) Close() error {
 	return nil
 }
 
-// --- Bucket operations ---
+// --- Bucket 操作 ---
 
 func (s *SQLiteStore) CreateBucket(ctx context.Context, b *Bucket) error {
 	now := time.Now()
@@ -585,7 +585,7 @@ func (s *SQLiteStore) CountBucketsByOwner(ctx context.Context, owner string) (in
 	return cnt, err
 }
 
-// --- Collection operations ---
+// --- Collection 操作 ---
 
 func (s *SQLiteStore) CreateCollection(ctx context.Context, c *LogicalCollection) error {
 	now := time.Now()
@@ -665,7 +665,7 @@ func (s *SQLiteStore) CountCollections(ctx context.Context, bucketID string) (in
 	return cnt, err
 }
 
-// --- Scan helpers ---
+// --- Scan 辅助函数 ---
 
 func scanBucket(row *sql.Row) (*Bucket, error) {
 	b := &Bucket{}
@@ -709,15 +709,15 @@ func scanCollectionRow(row rowScanner) (*LogicalCollection, error) {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **步骤 5: 运行测试确认通过**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/metadata/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/metadata/...`
+预期: PASS
 
-- [ ] **Step 6: Write collection CRUD tests**
+- [ ] **步骤 6: 编写 Collection CRUD 测试**
 
 ```go
-// Append to internal/vectorbucket/metadata/sqlite_store_test.go
+// 追加到 internal/vectorbucket/metadata/sqlite_store_test.go
 
 func TestCreateAndGetCollection(t *testing.T) {
 	s := newTestStore(t)
@@ -783,12 +783,12 @@ func TestCountCollections(t *testing.T) {
 }
 ```
 
-- [ ] **Step 7: Run all metadata tests**
+- [ ] **步骤 7: 运行全部 metadata 测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/metadata/...`
-Expected: All PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/metadata/...`
+预期: 全部 PASS
 
-- [ ] **Step 8: Commit**
+- [ ] **步骤 8: 提交**
 
 ```bash
 git add internal/vectorbucket/metadata/
@@ -799,13 +799,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 4: Namespace Router
+## 任务 4：Namespace Router（命名空间路由）
 
-**Files:**
-- Create: `internal/vectorbucket/router/namespace_router.go`
-- Create: `internal/vectorbucket/router/namespace_router_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/router/namespace_router.go`
+- 新建: `internal/vectorbucket/router/namespace_router_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **步骤 1: 编写失败测试**
 
 ```go
 // internal/vectorbucket/router/namespace_router_test.go
@@ -839,7 +839,7 @@ func TestResolveCollection(t *testing.T) {
 	r := newTestRouter(t)
 	ctx := context.Background()
 
-	// Setup: create bucket + collection in metadata
+	// 准备：在 metadata 中创建 bucket + collection
 	require.NoError(t, r.store.CreateBucket(ctx, &metadata.Bucket{
 		ID: "b1", Name: "my-bucket", Owner: "u1", Status: metadata.BucketStatusReady,
 	}))
@@ -863,12 +863,12 @@ func TestResolveNotFound(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2: 运行测试确认失败**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/router/...`
-Expected: FAIL
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/router/...`
+预期: FAIL
 
-- [ ] **Step 3: Implement NamespaceRouter**
+- [ ] **步骤 3: 实现 NamespaceRouter**
 
 ```go
 // internal/vectorbucket/router/namespace_router.go
@@ -881,6 +881,7 @@ import (
 	"github.com/milvus-io/milvus/internal/vectorbucket/metadata"
 )
 
+// PhysicalCollectionName 生成物理 Milvus collection 名称
 func PhysicalCollectionName(bucketID, collectionID string) string {
 	return fmt.Sprintf("vb_%s_%s", bucketID, collectionID)
 }
@@ -893,8 +894,8 @@ func NewNamespaceRouter(store metadata.Store) *NamespaceRouter {
 	return &NamespaceRouter{store: store}
 }
 
-// Resolve looks up a logical collection by bucket name + collection name,
-// returning the full LogicalCollection including its physical Milvus collection name.
+// Resolve 通过 bucket 名 + collection 名查找逻辑 collection，
+// 返回包含物理 Milvus collection 名称的完整 LogicalCollection。
 func (r *NamespaceRouter) Resolve(ctx context.Context, bucketName, collectionName string) (*metadata.LogicalCollection, error) {
 	bucket, err := r.store.GetBucketByName(ctx, bucketName)
 	if err != nil {
@@ -916,12 +917,12 @@ func (r *NamespaceRouter) Resolve(ctx context.Context, bucketName, collectionNam
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **步骤 4: 运行测试确认通过**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/router/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/router/...`
+预期: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5: 提交**
 
 ```bash
 git add internal/vectorbucket/router/
@@ -932,13 +933,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 5: Milvus Adapter
+## 任务 5：Milvus Adapter（Milvus 适配层）
 
-**Files:**
-- Create: `internal/vectorbucket/adapter/milvus_adapter.go`
-- Create: `internal/vectorbucket/adapter/milvus_adapter_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/adapter/milvus_adapter.go`
+- 新建: `internal/vectorbucket/adapter/milvus_adapter_test.go`
 
-- [ ] **Step 1: Define the adapter interface and struct**
+- [ ] **步骤 1: 定义 Adapter 接口和实现**
 
 ```go
 // internal/vectorbucket/adapter/milvus_adapter.go
@@ -954,7 +955,7 @@ import (
 	"github.com/milvus-io/milvus/client/v2/milvusclient"
 )
 
-// Adapter wraps the Milvus client for Vector Bucket operations.
+// Adapter 定义 Vector Bucket 对 Milvus 的操作接口
 type Adapter interface {
 	CreateCollection(ctx context.Context, name string, dim int, metric string) error
 	DropCollection(ctx context.Context, name string) error
@@ -1012,6 +1013,7 @@ func (a *MilvusAdapter) HasCollection(ctx context.Context, name string) (bool, e
 	return a.client.HasCollection(ctx, milvusclient.NewHasCollectionOption(name))
 }
 
+// computeNlist 根据设计文档公式计算 IVF nlist 参数: clamp(sqrt(N)*4, 1024, 65536)
 func computeNlist(vectorCount int64) int {
 	nlist := int(math.Sqrt(float64(vectorCount)) * 4)
 	if nlist < 1024 {
@@ -1125,7 +1127,7 @@ func (a *MilvusAdapter) Search(ctx context.Context, name string, vector []float3
 }
 ```
 
-- [ ] **Step 2: Write unit tests for pure functions**
+- [ ] **步骤 2: 编写纯函数的单元测试**
 
 ```go
 // internal/vectorbucket/adapter/milvus_adapter_test.go
@@ -1138,13 +1140,13 @@ import (
 )
 
 func TestComputeNlist(t *testing.T) {
-	// Small count → clamp to 1024
+	// 小数量 → 钳制到 1024
 	assert.Equal(t, 1024, computeNlist(100))
 
 	// sqrt(100000)*4 = 1264
 	assert.Equal(t, 1264, computeNlist(100000))
 
-	// Very large → clamp to 65536
+	// 超大数量 → 钳制到 65536
 	assert.Equal(t, 65536, computeNlist(1000000000))
 }
 
@@ -1161,12 +1163,12 @@ func TestMetricTypeFromString(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3: 运行测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/adapter/...`
-Expected: PASS (pure function tests only; Milvus integration tested in Task 12)
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/adapter/...`
+预期: PASS（仅纯函数测试；Milvus 集成测试在任务 16）
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4: 提交**
 
 ```bash
 git add internal/vectorbucket/adapter/
@@ -1177,13 +1179,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 6: Load/Release Controller
+## 任务 6：Load/Release 控制器
 
-**Files:**
-- Create: `internal/vectorbucket/controller/load_controller.go`
-- Create: `internal/vectorbucket/controller/load_controller_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/controller/load_controller.go`
+- 新建: `internal/vectorbucket/controller/load_controller_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **步骤 1: 编写失败测试**
 
 ```go
 // internal/vectorbucket/controller/load_controller_test.go
@@ -1199,7 +1201,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockAdapter records load/release calls without touching real Milvus
+// mockAdapter 记录 load/release 调用，不依赖真实 Milvus
 type mockAdapter struct {
 	mu        sync.Mutex
 	loaded    map[string]bool
@@ -1254,29 +1256,29 @@ func TestEnsureLoadedIdempotent(t *testing.T) {
 
 func TestLRUEviction(t *testing.T) {
 	ma := newMockAdapter()
-	// Budget: 200 MB
+	// 预算: 200 MB
 	ctrl := NewLoadController(ma, 200, 30*time.Minute, 50)
 
-	// Load two collections of 100MB each -> budget full
+	// 加载两个 100MB 的 collection → 预算满
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll1", 100.0))
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll2", 100.0))
 
-	// Load a third -> should evict coll1 (LRU)
+	// 加载第三个 → 应淘汰 coll1（LRU 最旧）
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll3", 100.0))
-	assert.False(t, ctrl.IsLoaded("coll1"), "coll1 should be evicted")
+	assert.False(t, ctrl.IsLoaded("coll1"), "coll1 应被淘汰")
 	assert.True(t, ctrl.IsLoaded("coll2"))
 	assert.True(t, ctrl.IsLoaded("coll3"))
 }
 
 func TestTTLRelease(t *testing.T) {
 	ma := newMockAdapter()
-	// TTL of 100ms for test speed
+	// TTL 100ms，加速测试
 	ctrl := NewLoadController(ma, 4096, 100*time.Millisecond, 50)
 
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll1", 100.0))
 	assert.True(t, ctrl.IsLoaded("coll1"))
 
-	// Wait for TTL to expire
+	// 等待 TTL 过期
 	time.Sleep(200 * time.Millisecond)
 	ctrl.RunTTLSweep()
 
@@ -1290,27 +1292,27 @@ func TestInFlightPreventsRelease(t *testing.T) {
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll1", 100.0))
 	ctrl.InFlightInc("coll1")
 
-	// Wait for TTL
+	// 等待 TTL
 	time.Sleep(200 * time.Millisecond)
 	ctrl.RunTTLSweep()
 
-	// Should NOT be released because in-flight > 0
+	// 有 in-flight 查询，不应被 release
 	assert.True(t, ctrl.IsLoaded("coll1"))
 
 	ctrl.InFlightDec("coll1")
 	ctrl.RunTTLSweep()
-	// Now it should be released
+	// 现在应该被 release
 	assert.False(t, ctrl.IsLoaded("coll1"))
 }
 
 func TestMaxLoadedCollections(t *testing.T) {
 	ma := newMockAdapter()
-	ctrl := NewLoadController(ma, 999999, 30*time.Minute, 2) // max 2 loaded
+	ctrl := NewLoadController(ma, 999999, 30*time.Minute, 2) // 最多 2 个
 
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "c1", 1.0))
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "c2", 1.0))
 
-	// Third should evict LRU
+	// 第三个应淘汰 LRU
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "c3", 1.0))
 	assert.False(t, ctrl.IsLoaded("c1"))
 }
@@ -1322,22 +1324,22 @@ func TestTouchUpdatesLRU(t *testing.T) {
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll1", 100.0))
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll2", 100.0))
 
-	// Touch coll1 so it becomes MRU
+	// Touch coll1，使其变为最近使用
 	ctrl.Touch("coll1")
 
-	// Load coll3 -> should evict coll2 (now LRU), not coll1
+	// 加载 coll3 → 应淘汰 coll2（此时 LRU 最旧），而非 coll1
 	require.NoError(t, ctrl.EnsureLoaded(context.Background(), "coll3", 100.0))
-	assert.True(t, ctrl.IsLoaded("coll1"), "coll1 was touched, should not be evicted")
-	assert.False(t, ctrl.IsLoaded("coll2"), "coll2 should be evicted as LRU")
+	assert.True(t, ctrl.IsLoaded("coll1"), "coll1 已被 touch，不应被淘汰")
+	assert.False(t, ctrl.IsLoaded("coll2"), "coll2 应作为 LRU 被淘汰")
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2: 运行测试确认失败**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/controller/...`
-Expected: FAIL
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/controller/...`
+预期: FAIL
 
-- [ ] **Step 3: Implement LoadController**
+- [ ] **步骤 3: 实现 LoadController**
 
 ```go
 // internal/vectorbucket/controller/load_controller.go
@@ -1350,30 +1352,30 @@ import (
 	"time"
 )
 
-// LoadReleaser is the subset of Adapter that the controller needs.
+// LoadReleaser 是控制器所需的 Adapter 子集接口
 type LoadReleaser interface {
 	LoadCollection(ctx context.Context, name string) error
 	ReleaseCollection(ctx context.Context, name string) error
 }
 
 type LoadEntry struct {
-	Name           string
-	LoadedAt       time.Time
-	LastAccessAt   time.Time
-	EstMemMB       float64
-	InFlightCount  int64
+	Name          string
+	LoadedAt      time.Time
+	LastAccessAt  time.Time
+	EstMemMB      float64
+	InFlightCount int64
 }
 
 type LoadController struct {
-	mu             sync.Mutex
-	adapter        LoadReleaser
-	budgetMB       float64
-	ttl            time.Duration
-	maxLoaded      int
-	entries        map[string]*LoadEntry
-	lruOrder       []string // front = oldest, back = newest
-	loadLocks      map[string]*sync.Mutex
-	loadLocksMu    sync.Mutex
+	mu          sync.Mutex
+	adapter     LoadReleaser
+	budgetMB    float64
+	ttl         time.Duration
+	maxLoaded   int
+	entries     map[string]*LoadEntry
+	lruOrder    []string // 前端 = 最旧，尾部 = 最新
+	loadLocks   map[string]*sync.Mutex
+	loadLocksMu sync.Mutex
 }
 
 func NewLoadController(adapter LoadReleaser, budgetMB int, ttl time.Duration, maxLoaded int) *LoadController {
@@ -1431,7 +1433,7 @@ func (c *LoadController) InFlightDec(name string) {
 }
 
 func (c *LoadController) EnsureLoaded(ctx context.Context, name string, estMemMB float64) error {
-	// Fast path: already loaded
+	// 快路径：已加载
 	c.mu.Lock()
 	if _, ok := c.entries[name]; ok {
 		c.entries[name].LastAccessAt = time.Now()
@@ -1441,12 +1443,12 @@ func (c *LoadController) EnsureLoaded(ctx context.Context, name string, estMemMB
 	}
 	c.mu.Unlock()
 
-	// Slow path: take per-collection lock
+	// 慢路径：获取 per-collection 互斥锁
 	lock := c.getLoadLock(name)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Double-check after acquiring lock
+	// 双重检查
 	c.mu.Lock()
 	if _, ok := c.entries[name]; ok {
 		c.entries[name].LastAccessAt = time.Now()
@@ -1455,19 +1457,19 @@ func (c *LoadController) EnsureLoaded(ctx context.Context, name string, estMemMB
 		return nil
 	}
 
-	// Evict if needed
+	// 需要腾空间时淘汰
 	if err := c.evictIfNeeded(estMemMB); err != nil {
 		c.mu.Unlock()
 		return err
 	}
 	c.mu.Unlock()
 
-	// Call Milvus load (outside lock to avoid blocking)
+	// 调用 Milvus load（在锁外执行，避免阻塞）
 	if err := c.adapter.LoadCollection(ctx, name); err != nil {
 		return fmt.Errorf("load collection %s: %w", name, err)
 	}
 
-	// Register
+	// 注册
 	c.mu.Lock()
 	now := time.Now()
 	c.entries[name] = &LoadEntry{
@@ -1482,7 +1484,7 @@ func (c *LoadController) EnsureLoaded(ctx context.Context, name string, estMemMB
 	return nil
 }
 
-// evictIfNeeded evicts LRU collections until we have enough budget. Must be called with c.mu held.
+// evictIfNeeded 按 LRU 顺序淘汰 collection 直到预算足够。调用时必须持有 c.mu。
 func (c *LoadController) evictIfNeeded(neededMB float64) error {
 	for c.usedMB()+neededMB > c.budgetMB || len(c.entries) >= c.maxLoaded {
 		if len(c.lruOrder) == 0 {
@@ -1498,8 +1500,6 @@ func (c *LoadController) evictIfNeeded(neededMB float64) error {
 			if entry.InFlightCount > 0 {
 				continue
 			}
-			// Evict this one (release outside lock would deadlock, but since this is a mock-friendly path,
-			// we do a synchronous release call; for production consider releasing outside the lock).
 			if err := c.adapter.ReleaseCollection(context.Background(), candidate); err != nil {
 				return fmt.Errorf("release collection %s: %w", candidate, err)
 			}
@@ -1523,6 +1523,7 @@ func (c *LoadController) usedMB() float64 {
 	return total
 }
 
+// RunTTLSweep 扫描并释放超过 TTL 且无 in-flight 查询的 collection
 func (c *LoadController) RunTTLSweep() {
 	c.mu.Lock()
 	now := time.Now()
@@ -1543,7 +1544,7 @@ func (c *LoadController) RunTTLSweep() {
 	}
 }
 
-// StartTTLSweepLoop starts a background goroutine that sweeps every interval.
+// StartTTLSweepLoop 启动后台 goroutine 定时扫描 TTL
 func (c *LoadController) StartTTLSweepLoop(ctx context.Context, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -1559,15 +1560,15 @@ func (c *LoadController) StartTTLSweepLoop(ctx context.Context, interval time.Du
 	}()
 }
 
-// EstimateMemMB calculates estimated memory for IVF_SQ8.
-// IVF_SQ8: each vector = dim * 1 byte (SQ8) * overhead_ratio
+// EstimateMemMB 计算 IVF_SQ8 模式下的预估内存占用
+// IVF_SQ8: 每个向量 = dim * 1 byte (SQ8) * overhead_ratio
 func EstimateMemMB(vectorCount int64, dim int) float64 {
 	const overheadRatio = 1.2
 	bytes := float64(vectorCount) * float64(dim) * 1.0 * overheadRatio
 	return bytes / (1024 * 1024)
 }
 
-// --- LRU helpers (must be called with c.mu held) ---
+// --- LRU 辅助方法（调用时必须持有 c.mu）---
 
 func (c *LoadController) moveLRUToBack(name string) {
 	c.removeLRU(name)
@@ -1584,12 +1585,12 @@ func (c *LoadController) removeLRU(name string) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **步骤 4: 运行测试确认通过**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/controller/...`
-Expected: All PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/controller/...`
+预期: 全部 PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5: 提交**
 
 ```bash
 git add internal/vectorbucket/controller/
@@ -1600,13 +1601,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 7: Quota Enforcement
+## 任务 7：配额管控
 
-**Files:**
-- Create: `internal/vectorbucket/quota/quota.go`
-- Create: `internal/vectorbucket/quota/quota_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/quota/quota.go`
+- 新建: `internal/vectorbucket/quota/quota_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **步骤 1: 编写失败测试**
 
 ```go
 // internal/vectorbucket/quota/quota_test.go
@@ -1614,6 +1615,7 @@ package quota
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -1646,7 +1648,7 @@ func TestCanCreateBucketExceedsPerTenantLimit(t *testing.T) {
 	checker, store := newTestChecker(t)
 	ctx := context.Background()
 
-	// Fill up per-tenant limit (100)
+	// 填满单租户上限 (100)
 	for i := 0; i < 100; i++ {
 		require.NoError(t, store.CreateBucket(ctx, &metadata.Bucket{
 			ID: fmt.Sprintf("b%d", i), Name: fmt.Sprintf("bkt-%d", i),
@@ -1702,17 +1704,17 @@ func TestCheckDimension(t *testing.T) {
 
 func TestCheckVectorCount(t *testing.T) {
 	checker, _ := newTestChecker(t)
-	assert.NoError(t, checker.CheckVectorCount(999999, 10))
-	assert.Error(t, checker.CheckVectorCount(999999, 2)) // 999999 + 2 > 1000000... well 1000001
+	assert.NoError(t, checker.CheckVectorCount(999999, 1))
+	assert.Error(t, checker.CheckVectorCount(999999, 2)) // 999999 + 2 > 1000000
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2: 运行测试确认失败**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/quota/...`
-Expected: FAIL
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 ./internal/vectorbucket/quota/...`
+预期: FAIL
 
-- [ ] **Step 3: Implement Checker**
+- [ ] **步骤 3: 实现 Checker**
 
 ```go
 // internal/vectorbucket/quota/quota.go
@@ -1793,12 +1795,12 @@ func (c *Checker) CheckMetric(metric string) error {
 }
 ```
 
-- [ ] **Step 4: Add missing import `fmt` to test file, then run tests**
+- [ ] **步骤 4: 运行测试确认通过**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/quota/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/quota/...`
+预期: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5: 提交**
 
 ```bash
 git add internal/vectorbucket/quota/
@@ -1809,12 +1811,12 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 8: Prometheus Metrics
+## 任务 8：Prometheus 监控指标
 
-**Files:**
-- Create: `internal/vectorbucket/metrics/metrics.go`
+**文件:**
+- 新建: `internal/vectorbucket/metrics/metrics.go`
 
-- [ ] **Step 1: Define metrics**
+- [ ] **步骤 1: 定义指标**
 
 ```go
 // internal/vectorbucket/metrics/metrics.go
@@ -1828,64 +1830,64 @@ import (
 var (
 	BucketCount = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "vb_bucket_count",
-		Help: "Number of active buckets",
+		Help: "活跃 bucket 数量",
 	})
 
 	LogicalCollectionCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vb_logical_collection_count",
-		Help: "Number of logical collections by status",
+		Help: "按状态统计的 logical collection 数量",
 	}, []string{"status"})
 
 	LoadedCollectionCount = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "vb_loaded_collection_count",
-		Help: "Number of currently loaded collections",
+		Help: "当前已 load 的 collection 数量",
 	})
 
 	LoadDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "vb_load_duration_seconds",
-		Help:    "Duration of LoadCollection calls",
-		Buckets: prometheus.ExponentialBuckets(0.1, 2, 10), // 0.1s to ~51s
+		Help:    "LoadCollection 调用耗时",
+		Buckets: prometheus.ExponentialBuckets(0.1, 2, 10), // 0.1s 到 ~51s
 	})
 
 	QueryDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "vb_query_duration_seconds",
-		Help:    "Duration of query calls by phase",
-		Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms to ~16s
+		Help:    "查询各阶段耗时",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms 到 ~16s
 	}, []string{"phase"})
 
 	ReleaseEvictions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "vb_release_evictions_total",
-		Help: "Number of collection releases by reason",
+		Help: "按原因统计的 collection release 次数",
 	}, []string{"reason"})
 
 	CollectionMemEstimate = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vb_collection_mem_estimate_mb",
-		Help: "Estimated memory usage per collection in MB",
+		Help: "单 collection 预估内存占用（MB）",
 	}, []string{"collection"})
 
 	InsertTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "vb_insert_total",
-		Help: "Total vectors inserted",
+		Help: "插入向量总数",
 	}, []string{"bucket", "collection"})
 
 	QueryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "vb_query_total",
-		Help: "Total query requests",
+		Help: "查询请求总数",
 	}, []string{"bucket", "collection"})
 
 	ErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "vb_error_total",
-		Help: "Total errors by type",
+		Help: "按类型统计的错误总数",
 	}, []string{"type"})
 )
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [ ] **步骤 2: 验证编译通过**
 
-Run: `cd /root/xty/milvus && go build ./internal/vectorbucket/metrics/`
-Expected: Success
+运行: `cd /root/xty/milvus && go build ./internal/vectorbucket/metrics/`
+预期: 成功
 
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3: 提交**
 
 ```bash
 git add internal/vectorbucket/metrics/
@@ -1896,18 +1898,19 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 9: Error Response Helpers
+## 任务 9：统一错误响应
 
-**Files:**
-- Create: `internal/vectorbucket/gateway/errors.go`
+**文件:**
+- 新建: `internal/vectorbucket/gateway/errors.go`
 
-- [ ] **Step 1: Write error helpers**
+- [ ] **步骤 1: 编写错误响应辅助函数**
 
 ```go
 // internal/vectorbucket/gateway/errors.go
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -1940,14 +1943,12 @@ func respondServiceUnavailable(c *gin.Context, msg string, retryAfterSec int) {
 }
 ```
 
-Note: Add `"fmt"` to imports.
+- [ ] **步骤 2: 验证编译通过**
 
-- [ ] **Step 2: Verify it compiles**
+运行: `cd /root/xty/milvus && go build ./internal/vectorbucket/gateway/`
+预期: 成功
 
-Run: `cd /root/xty/milvus && go build ./internal/vectorbucket/gateway/`
-Expected: Success
-
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3: 提交**
 
 ```bash
 git add internal/vectorbucket/gateway/errors.go
@@ -1958,14 +1959,14 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 10: Bucket HTTP Handlers
+## 任务 10：Bucket HTTP Handler
 
-**Files:**
-- Create: `internal/vectorbucket/gateway/handlers_bucket.go`
-- Create: `internal/vectorbucket/gateway/handlers_bucket_test.go`
-- Create: `internal/vectorbucket/gateway/server.go`
+**文件:**
+- 新建: `internal/vectorbucket/gateway/server.go`
+- 新建: `internal/vectorbucket/gateway/handlers_bucket.go`
+- 新建: `internal/vectorbucket/gateway/handlers_bucket_test.go`
 
-- [ ] **Step 1: Write the gateway Server struct**
+- [ ] **步骤 1: 编写 Gateway Server 结构体**
 
 ```go
 // internal/vectorbucket/gateway/server.go
@@ -1974,7 +1975,6 @@ package gateway
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -2019,24 +2019,24 @@ func NewServer(cfg *config.Config, store metadata.Store, milvusAdapter adapter.A
 func (s *Server) registerRoutes() {
 	v1 := s.engine.Group("/v1")
 
-	// Buckets
+	// Bucket
 	v1.POST("/buckets", s.CreateBucket)
 	v1.GET("/buckets/:bucket", s.GetBucket)
 	v1.DELETE("/buckets/:bucket", s.DeleteBucket)
 
-	// Collections
+	// Collection
 	v1.POST("/buckets/:bucket/collections", s.CreateCollection)
 	v1.DELETE("/buckets/:bucket/collections/:collection", s.DeleteCollection)
 
-	// Vectors
+	// Vector
 	v1.POST("/buckets/:bucket/collections/:collection/vectors", s.PutVectors)
 	v1.POST("/buckets/:bucket/collections/:collection/vectors:upsert", s.UpsertVectors)
 	v1.POST("/buckets/:bucket/collections/:collection/vectors:delete", s.DeleteVectors)
 
-	// Query
+	// 查询
 	v1.POST("/buckets/:bucket/collections/:collection/query", s.QueryVectors)
 
-	// Metrics
+	// 指标
 	s.engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 }
 
@@ -2060,7 +2060,7 @@ func (s *Server) Engine() *gin.Engine {
 }
 ```
 
-- [ ] **Step 2: Write bucket handlers**
+- [ ] **步骤 2: 编写 Bucket Handler**
 
 ```go
 // internal/vectorbucket/gateway/handlers_bucket.go
@@ -2102,7 +2102,7 @@ func (s *Server) CreateBucket(c *gin.Context) {
 		return
 	}
 
-	// TODO: extract owner from auth context; for now use placeholder
+	// TODO: 从鉴权上下文获取 owner；当前使用占位符
 	owner := "default"
 
 	if err := s.quota.CanCreateBucket(c.Request.Context(), owner); err != nil {
@@ -2146,7 +2146,7 @@ func (s *Server) DeleteBucket(c *gin.Context) {
 		return
 	}
 
-	// Check bucket is empty
+	// 检查 bucket 是否为空
 	cnt, err := s.store.CountCollections(c.Request.Context(), bucket.ID)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to check collections")
@@ -2166,7 +2166,7 @@ func (s *Server) DeleteBucket(c *gin.Context) {
 }
 ```
 
-- [ ] **Step 3: Write bucket handler tests**
+- [ ] **步骤 3: 编写 Bucket Handler 测试**
 
 ```go
 // internal/vectorbucket/gateway/handlers_bucket_test.go
@@ -2189,7 +2189,7 @@ import (
 	"github.com/milvus-io/milvus/internal/vectorbucket/metadata"
 )
 
-// testServer creates a Server with SQLite store and no real Milvus adapter
+// testServer 创建一个使用 SQLite 存储、无真实 Milvus adapter 的 Server
 func testServer(t *testing.T) *Server {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
@@ -2223,7 +2223,7 @@ func TestCreateBucket(t *testing.T) {
 func TestGetBucket(t *testing.T) {
 	s := testServer(t)
 
-	// Create first
+	// 先创建
 	body, _ := json.Marshal(CreateBucketRequest{Name: "test-bucket"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1/buckets", bytes.NewReader(body))
@@ -2231,7 +2231,7 @@ func TestGetBucket(t *testing.T) {
 	s.Engine().ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	// Get
+	// 查询
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("GET", "/v1/buckets/test-bucket", nil)
 	s.Engine().ServeHTTP(w, req)
@@ -2255,7 +2255,7 @@ func TestGetBucketNotFound(t *testing.T) {
 func TestDeleteEmptyBucket(t *testing.T) {
 	s := testServer(t)
 
-	// Create
+	// 创建
 	body, _ := json.Marshal(CreateBucketRequest{Name: "del-bucket"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1/buckets", bytes.NewReader(body))
@@ -2263,7 +2263,7 @@ func TestDeleteEmptyBucket(t *testing.T) {
 	s.Engine().ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	// Delete
+	// 删除
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("DELETE", "/v1/buckets/del-bucket", nil)
 	s.Engine().ServeHTTP(w, req)
@@ -2271,23 +2271,23 @@ func TestDeleteEmptyBucket(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code)
 }
 
-func TestDeleteBucketInvalidName(t *testing.T) {
+func TestDeleteBucketNotFound(t *testing.T) {
 	s := testServer(t)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/v1/buckets/does-not-exist", nil)
+	req, _ = http.NewRequest("DELETE", "/v1/buckets/does-not-exist", nil)
 	s.Engine().ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **步骤 4: 运行测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
+预期: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5: 提交**
 
 ```bash
 git add internal/vectorbucket/gateway/server.go internal/vectorbucket/gateway/handlers_bucket.go internal/vectorbucket/gateway/handlers_bucket_test.go
@@ -2298,13 +2298,13 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 11: Collection HTTP Handlers
+## 任务 11：Collection HTTP Handler
 
-**Files:**
-- Create: `internal/vectorbucket/gateway/handlers_collection.go`
-- Create: `internal/vectorbucket/gateway/handlers_collection_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/gateway/handlers_collection.go`
+- 新建: `internal/vectorbucket/gateway/handlers_collection_test.go`
 
-- [ ] **Step 1: Write collection handlers**
+- [ ] **步骤 1: 编写 Collection Handler**
 
 ```go
 // internal/vectorbucket/gateway/handlers_collection.go
@@ -2394,10 +2394,10 @@ func (s *Server) CreateCollection(c *gin.Context) {
 		return
 	}
 
-	// Create physical Milvus collection (no index yet)
+	// 创建物理 Milvus collection（不建索引）
 	if s.adapter != nil {
 		if err := s.adapter.CreateCollection(ctx, physName, req.Dim, req.Metric); err != nil {
-			// Rollback metadata
+			// 回滚 metadata
 			s.store.DeleteCollection(ctx, collID)
 			respondError(c, http.StatusInternalServerError, "failed to create Milvus collection: "+err.Error())
 			return
@@ -2430,23 +2430,23 @@ func (s *Server) DeleteCollection(c *gin.Context) {
 		return
 	}
 
-	// Mark as deleting
+	// 标记为删除中
 	s.store.UpdateCollectionStatus(ctx, coll.ID, metadata.CollStatusDeleting)
 
-	// Release + drop in Milvus
+	// 在 Milvus 中 release + drop
 	if s.adapter != nil {
 		_ = s.adapter.ReleaseCollection(ctx, coll.PhysicalName)
 		_ = s.adapter.DropCollection(ctx, coll.PhysicalName)
 	}
 
-	// Mark as deleted
+	// 标记已删除
 	s.store.UpdateCollectionStatus(ctx, coll.ID, metadata.CollStatusDeleted)
 
 	c.Status(http.StatusNoContent)
 }
 ```
 
-- [ ] **Step 2: Write collection handler tests**
+- [ ] **步骤 2: 编写 Collection Handler 测试**
 
 ```go
 // internal/vectorbucket/gateway/handlers_collection_test.go
@@ -2534,7 +2534,7 @@ func TestDeleteCollection(t *testing.T) {
 	s := testServer(t)
 	createTestBucket(t, s, "bkt")
 
-	// Create collection
+	// 创建 collection
 	body, _ := json.Marshal(CreateCollectionRequest{Name: "del-coll", Dim: 768, Metric: "COSINE"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1/buckets/bkt/collections", bytes.NewReader(body))
@@ -2542,7 +2542,7 @@ func TestDeleteCollection(t *testing.T) {
 	s.Engine().ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	// Delete collection
+	// 删除 collection
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("DELETE", "/v1/buckets/bkt/collections/del-coll", nil)
 	s.Engine().ServeHTTP(w, req)
@@ -2554,7 +2554,7 @@ func TestDeleteNonEmptyBucketFails(t *testing.T) {
 	s := testServer(t)
 	createTestBucket(t, s, "bkt")
 
-	// Create collection
+	// 创建 collection
 	body, _ := json.Marshal(CreateCollectionRequest{Name: "coll", Dim: 768, Metric: "COSINE"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1/buckets/bkt/collections", bytes.NewReader(body))
@@ -2562,7 +2562,7 @@ func TestDeleteNonEmptyBucketFails(t *testing.T) {
 	s.Engine().ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	// Try to delete bucket
+	// 尝试删除非空 bucket
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("DELETE", "/v1/buckets/bkt", nil)
 	s.Engine().ServeHTTP(w, req)
@@ -2571,12 +2571,12 @@ func TestDeleteNonEmptyBucketFails(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3: 运行测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
+预期: PASS
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4: 提交**
 
 ```bash
 git add internal/vectorbucket/gateway/handlers_collection.go internal/vectorbucket/gateway/handlers_collection_test.go
@@ -2587,19 +2587,22 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 12: Vector Write Handlers (Put / Upsert / Delete)
+## 任务 12：Vector 写入 Handler（Put / Upsert / Delete）
 
-**Files:**
-- Create: `internal/vectorbucket/gateway/handlers_vector.go`
-- Create: `internal/vectorbucket/gateway/handlers_vector_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/gateway/handlers_vector.go`
+- 新建: `internal/vectorbucket/gateway/handlers_vector_test.go`
 
-- [ ] **Step 1: Write vector handlers**
+- [ ] **步骤 1: 编写 Vector Handler**
 
 ```go
 // internal/vectorbucket/gateway/handlers_vector.go
 package gateway
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -2654,7 +2657,7 @@ func (s *Server) writeVectors(c *gin.Context, upsert bool) {
 		return
 	}
 
-	// Validate dimensions
+	// 验证维度
 	for _, v := range req.Vectors {
 		if len(v.Vector) != lc.Dim {
 			respondBadRequest(c, fmt.Sprintf("vector dimension mismatch: expected %d, got %d", lc.Dim, len(v.Vector)))
@@ -2662,7 +2665,7 @@ func (s *Server) writeVectors(c *gin.Context, upsert bool) {
 		}
 	}
 
-	// Quota check
+	// 配额检查
 	if !upsert {
 		if err := s.quota.CheckVectorCount(lc.VectorCount, len(req.Vectors)); err != nil {
 			respondQuotaExceeded(c, err.Error())
@@ -2670,7 +2673,7 @@ func (s *Server) writeVectors(c *gin.Context, upsert bool) {
 		}
 	}
 
-	// Prepare batch data
+	// 准备批量数据
 	ids := make([]string, len(req.Vectors))
 	vectors := make([][]float32, len(req.Vectors))
 	metadataBytes := make([][]byte, len(req.Vectors))
@@ -2700,12 +2703,12 @@ func (s *Server) writeVectors(c *gin.Context, upsert bool) {
 		}
 	}
 
-	// Update vector count
+	// 更新向量计数
 	if !upsert {
 		s.store.UpdateCollectionVectorCount(ctx, lc.ID, int64(len(req.Vectors)))
 	}
 
-	// Trigger async index build if threshold reached
+	// 累积达到阈值后触发异步建索引
 	if !lc.IndexBuilt {
 		newCount := lc.VectorCount + int64(len(req.Vectors))
 		if newCount >= int64(s.cfg.IndexBuildThreshold) {
@@ -2762,9 +2765,7 @@ func (s *Server) DeleteVectors(c *gin.Context) {
 }
 ```
 
-Note: Add `"context"`, `"encoding/json"`, `"fmt"` to the import block.
-
-- [ ] **Step 2: Write tests (without real Milvus — adapter=nil paths)**
+- [ ] **步骤 2: 编写测试（无真实 Milvus — adapter=nil 路径）**
 
 ```go
 // internal/vectorbucket/gateway/handlers_vector_test.go
@@ -2817,7 +2818,7 @@ func TestPutVectorsDimMismatch(t *testing.T) {
 
 	body, _ := json.Marshal(PutVectorsRequest{
 		Vectors: []VectorEntry{
-			{ID: "v1", Vector: []float32{0.1, 0.2}}, // dim=2, expected 3
+			{ID: "v1", Vector: []float32{0.1, 0.2}}, // dim=2，期望 3
 		},
 	})
 	w := httptest.NewRecorder()
@@ -2872,12 +2873,12 @@ func TestDeleteVectorsNoIDsOrFilter(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3: 运行测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
+预期: PASS
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4: 提交**
 
 ```bash
 git add internal/vectorbucket/gateway/handlers_vector.go internal/vectorbucket/gateway/handlers_vector_test.go
@@ -2888,19 +2889,21 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 13: Query Handler (with Load/Release integration)
+## 任务 13：Query Handler（含 Load/Release 集成）
 
-**Files:**
-- Create: `internal/vectorbucket/gateway/handlers_query.go`
-- Create: `internal/vectorbucket/gateway/handlers_query_test.go`
+**文件:**
+- 新建: `internal/vectorbucket/gateway/handlers_query.go`
+- 新建: `internal/vectorbucket/gateway/handlers_query_test.go`
 
-- [ ] **Step 1: Write query handler**
+- [ ] **步骤 1: 编写查询 Handler**
 
 ```go
 // internal/vectorbucket/gateway/handlers_query.go
 package gateway
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -2939,7 +2942,7 @@ func (s *Server) QueryVectors(c *gin.Context) {
 		return
 	}
 	if req.Nprobe <= 0 {
-		req.Nprobe = 16 // default
+		req.Nprobe = 16 // 默认值
 	}
 
 	lc, err := s.router.Resolve(ctx, bucketName, collName)
@@ -2953,7 +2956,7 @@ func (s *Server) QueryVectors(c *gin.Context) {
 		return
 	}
 
-	// Ensure collection is loaded
+	// 确保 collection 已 load
 	estMem := controller.EstimateMemMB(lc.VectorCount, lc.Dim)
 	loadStart := time.Now()
 	if err := s.controller.EnsureLoaded(ctx, lc.PhysicalName, estMem); err != nil {
@@ -2965,16 +2968,16 @@ func (s *Server) QueryVectors(c *gin.Context) {
 		metrics.LoadDuration.Observe(loadDur.Seconds())
 	}
 
-	// Track in-flight
+	// 追踪 in-flight 查询
 	s.controller.InFlightInc(lc.PhysicalName)
 	defer s.controller.InFlightDec(lc.PhysicalName)
 	s.controller.Touch(lc.PhysicalName)
 
-	// Update last access in metadata
+	// 更新 metadata 中的最近访问时间
 	s.store.UpdateCollectionLastAccess(ctx, lc.ID)
 
 	if s.adapter == nil {
-		// No Milvus adapter — return empty results (test mode)
+		// 无 Milvus adapter — 返回空结果（测试模式）
 		c.JSON(http.StatusOK, []QueryResultItem{})
 		return
 	}
@@ -3003,9 +3006,7 @@ func (s *Server) QueryVectors(c *gin.Context) {
 }
 ```
 
-Note: Add `"encoding/json"`, `"fmt"` to imports.
-
-- [ ] **Step 2: Write query handler tests**
+- [ ] **步骤 2: 编写查询 Handler 测试**
 
 ```go
 // internal/vectorbucket/gateway/handlers_query_test.go
@@ -3029,7 +3030,7 @@ import (
 	"github.com/milvus-io/milvus/internal/vectorbucket/metadata"
 )
 
-// mockLoadReleaser for controller tests
+// mockLoadReleaser 用于控制器测试
 type mockLoadReleaser struct{}
 
 func (m *mockLoadReleaser) LoadCollection(ctx context.Context, name string) error    { return nil }
@@ -3051,7 +3052,7 @@ func TestQueryVectors(t *testing.T) {
 	s := testServerWithController(t)
 	createTestBucket(t, s, "bkt")
 
-	// Create collection with dim=3
+	// 创建 dim=3 的 collection
 	body, _ := json.Marshal(CreateCollectionRequest{Name: "coll", Dim: 3, Metric: "COSINE"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1/buckets/bkt/collections", bytes.NewReader(body))
@@ -3059,7 +3060,7 @@ func TestQueryVectors(t *testing.T) {
 	s.Engine().ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	// Query
+	// 查询
 	body, _ = json.Marshal(QueryRequest{Vector: []float32{0.1, 0.2, 0.3}, TopK: 5})
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("POST", "/v1/buckets/bkt/collections/coll/query", bytes.NewReader(body))
@@ -3110,12 +3111,12 @@ func TestQueryVectorsDimMismatch(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **步骤 3: 运行测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/gateway/...`
+预期: PASS
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4: 提交**
 
 ```bash
 git add internal/vectorbucket/gateway/handlers_query.go internal/vectorbucket/gateway/handlers_query_test.go
@@ -3126,12 +3127,12 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 14: Main Entry Point (Wire Everything Together)
+## 任务 14：Main 入口（串联所有组件）
 
-**Files:**
-- Modify: `internal/vectorbucket/cmd/main.go`
+**文件:**
+- 修改: `internal/vectorbucket/cmd/main.go`
 
-- [ ] **Step 1: Update main.go to wire all components**
+- [ ] **步骤 1: 更新 main.go 串联所有组件**
 
 ```go
 // internal/vectorbucket/cmd/main.go
@@ -3144,46 +3145,46 @@ import (
 	"syscall"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/vectorbucket/adapter"
 	"github.com/milvus-io/milvus/internal/vectorbucket/config"
 	"github.com/milvus-io/milvus/internal/vectorbucket/controller"
 	"github.com/milvus-io/milvus/internal/vectorbucket/gateway"
 	"github.com/milvus-io/milvus/internal/vectorbucket/metadata"
 	"github.com/milvus-io/milvus/pkg/v2/log"
-
-	"go.uber.org/zap"
 )
 
 func main() {
 	cfg := config.LoadConfig()
 
-	// Init metadata store
+	// 初始化 metadata 存储
 	store := metadata.NewSQLiteStore(cfg.SQLitePath)
 	if err := store.Init(context.Background()); err != nil {
 		log.Fatal("failed to init metadata store", zap.Error(err))
 	}
 	defer store.Close()
 
-	// Init Milvus adapter
+	// 初始化 Milvus 适配层
 	milvusAdapter, err := adapter.NewMilvusAdapter(cfg.MilvusAddr)
 	if err != nil {
 		log.Fatal("failed to connect to Milvus", zap.Error(err))
 	}
 	defer milvusAdapter.Close()
 
-	// Init Load/Release Controller
+	// 初始化 Load/Release 控制器
 	ttl := time.Duration(cfg.TTLSeconds) * time.Second
 	ctrl := controller.NewLoadController(milvusAdapter, cfg.LoadBudgetMB, ttl, cfg.MaxLoadedColls)
 
-	// Start TTL sweep loop
+	// 启动 TTL 扫描循环
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctrl.StartTTLSweepLoop(ctx, 60*time.Second)
 
-	// Init gateway server
+	// 初始化 Gateway 服务
 	srv := gateway.NewServer(&cfg, store, milvusAdapter, ctrl)
 
-	// Graceful shutdown
+	// 优雅关闭
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -3202,12 +3203,12 @@ func main() {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [ ] **步骤 2: 验证编译通过**
 
-Run: `cd /root/xty/milvus && go build ./internal/vectorbucket/cmd/`
-Expected: Success
+运行: `cd /root/xty/milvus && go build ./internal/vectorbucket/cmd/`
+预期: 成功
 
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3: 提交**
 
 ```bash
 git add internal/vectorbucket/cmd/main.go
@@ -3218,26 +3219,26 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 15: Run Full Test Suite + Fix Issues
+## 任务 15：全量测试 + 修复问题
 
-- [ ] **Step 1: Run all vectorbucket tests**
+- [ ] **步骤 1: 运行所有 vectorbucket 测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/...`
-Expected: All packages PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/...`
+预期: 全部 PASS
 
-- [ ] **Step 2: Run go vet**
+- [ ] **步骤 2: 运行 go vet**
 
-Run: `cd /root/xty/milvus && go vet ./internal/vectorbucket/...`
-Expected: No issues
+运行: `cd /root/xty/milvus && go vet ./internal/vectorbucket/...`
+预期: 无问题
 
-- [ ] **Step 3: Fix any compilation or test failures found in steps 1-2**
+- [ ] **步骤 3: 修复步骤 1-2 发现的编译或测试错误**
 
-Address any issues that arise. Common problems:
-- Missing imports (add `"fmt"`, `"encoding/json"`, `"context"` where needed)
-- Import cycle issues (the adapter interface should be in a separate file if needed)
-- Type mismatches between `time.Duration` and `int` in controller constructor
+常见问题：
+- 缺少 import（补充 `"fmt"`、`"encoding/json"`、`"context"` 等）
+- import 循环（adapter 接口如有需要应独立文件）
+- controller 构造函数中 `time.Duration` 和 `int` 类型不匹配
 
-- [ ] **Step 4: Commit fixes if any**
+- [ ] **步骤 4: 如有修复则提交**
 
 ```bash
 git add internal/vectorbucket/
@@ -3248,9 +3249,9 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Task 16: Verify Complete API Contract
+## 任务 16：验证完整 API 契约
 
-- [ ] **Step 1: Write an API contract test that exercises all endpoints**
+- [ ] **步骤 1: 编写端到端 API 契约测试**
 
 ```go
 // internal/vectorbucket/integration/api_test.go
@@ -3290,7 +3291,7 @@ func TestFullAPIFlow(t *testing.T) {
 	srv := gateway.NewServer(&cfg, store, nil, ctrl)
 	engine := srv.Engine()
 
-	// 1. Create bucket
+	// 1. 创建 bucket
 	body, _ := json.Marshal(map[string]string{"name": "test-bucket"})
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/v1/buckets", bytes.NewReader(body))
@@ -3298,13 +3299,13 @@ func TestFullAPIFlow(t *testing.T) {
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusCreated, w.Code)
 
-	// 2. Get bucket
+	// 2. 查询 bucket
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("GET", "/v1/buckets/test-bucket", nil)
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	// 3. Create collection
+	// 3. 创建 collection
 	body, _ = json.Marshal(map[string]any{"name": "vectors", "dim": 4, "metric": "COSINE"})
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("POST", "/v1/buckets/test-bucket/collections", bytes.NewReader(body))
@@ -3312,7 +3313,7 @@ func TestFullAPIFlow(t *testing.T) {
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusCreated, w.Code)
 
-	// 4. Put vectors
+	// 4. 写入向量
 	body, _ = json.Marshal(map[string]any{
 		"vectors": []map[string]any{
 			{"id": "v1", "vector": []float32{0.1, 0.2, 0.3, 0.4}, "metadata": map[string]string{"tag": "a"}},
@@ -3325,7 +3326,7 @@ func TestFullAPIFlow(t *testing.T) {
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	// 5. Query
+	// 5. 查询向量
 	body, _ = json.Marshal(map[string]any{"vector": []float32{0.1, 0.2, 0.3, 0.4}, "topK": 5})
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("POST", "/v1/buckets/test-bucket/collections/vectors/query", bytes.NewReader(body))
@@ -3333,7 +3334,7 @@ func TestFullAPIFlow(t *testing.T) {
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	// 6. Delete vectors
+	// 6. 删除向量
 	body, _ = json.Marshal(map[string]any{"ids": []string{"v1"}})
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("POST", "/v1/buckets/test-bucket/collections/vectors/vectors:delete", bytes.NewReader(body))
@@ -3341,19 +3342,19 @@ func TestFullAPIFlow(t *testing.T) {
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	// 7. Delete collection
+	// 7. 删除 collection
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("DELETE", "/v1/buckets/test-bucket/collections/vectors", nil)
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNoContent, w.Code)
 
-	// 8. Delete bucket (now empty)
+	// 8. 删除 bucket（已空）
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("DELETE", "/v1/buckets/test-bucket", nil)
 	engine.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNoContent, w.Code)
 
-	// 9. Verify bucket gone
+	// 9. 验证 bucket 已不存在
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("GET", "/v1/buckets/test-bucket", nil)
 	engine.ServeHTTP(w, req)
@@ -3361,12 +3362,12 @@ func TestFullAPIFlow(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run integration test**
+- [ ] **步骤 2: 运行集成测试**
 
-Run: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/integration/...`
-Expected: PASS
+运行: `cd /root/xty/milvus && go test -tags dynamic,test -gcflags="all=-N -l" -count=1 -v ./internal/vectorbucket/integration/...`
+预期: PASS
 
-- [ ] **Step 3: Commit**
+- [ ] **步骤 3: 提交**
 
 ```bash
 git add internal/vectorbucket/integration/
@@ -3377,23 +3378,23 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-## Summary
+## 总览
 
-| Task | Component | Key Deliverables |
-|------|-----------|-----------------|
-| 1 | Config + Scaffold | `config.go`, `main.go` stub |
-| 2 | Metadata Models | `models.go`, `store.go` interface |
-| 3 | SQLite Store | Full CRUD for buckets + collections |
-| 4 | Namespace Router | Logical name -> physical name resolution |
-| 5 | Milvus Adapter | Collection/vector/search ops wrapping client |
-| 6 | Load/Release Controller | LRU + TTL + budget + in-flight tracking |
-| 7 | Quota Enforcement | Bucket/collection/dim/vector count limits |
-| 8 | Prometheus Metrics | All Phase 1 metric definitions |
-| 9 | Error Helpers | Consistent HTTP error responses |
-| 10 | Bucket Handlers | Create/Get/Delete bucket HTTP API |
-| 11 | Collection Handlers | Create/Delete collection HTTP API |
-| 12 | Vector Handlers | Put/Upsert/Delete vectors HTTP API |
-| 13 | Query Handler | Search with load/release integration |
-| 14 | Main Entry Point | Wire all components together |
-| 15 | Full Test Suite | Fix any remaining issues |
-| 16 | API Contract Test | End-to-end flow verification |
+| 任务 | 组件 | 核心交付物 |
+|------|------|-----------|
+| 1 | 配置 + 脚手架 | `config.go`、`main.go` 占位 |
+| 2 | Metadata 模型 | `models.go`、`store.go` 接口 |
+| 3 | SQLite Store | Bucket + Collection 完整 CRUD |
+| 4 | Namespace Router | 逻辑名 -> 物理名解析 |
+| 5 | Milvus Adapter | 封装 client 的 collection/vector/search 操作 |
+| 6 | Load/Release 控制器 | LRU + TTL + 预算 + in-flight 追踪 |
+| 7 | 配额管控 | Bucket/Collection/维度/向量数限制 |
+| 8 | Prometheus 指标 | Phase 1 全部指标定义 |
+| 9 | 错误响应 | 统一 HTTP 错误响应格式 |
+| 10 | Bucket Handler | 创建/查询/删除 Bucket HTTP API |
+| 11 | Collection Handler | 创建/删除 Collection HTTP API |
+| 12 | Vector Handler | Put/Upsert/Delete 向量 HTTP API |
+| 13 | Query Handler | 查询 + Load/Release 控制器集成 |
+| 14 | Main 入口 | 串联所有组件 + 优雅关闭 |
+| 15 | 全量测试 | 修复剩余编译和测试问题 |
+| 16 | API 契约测试 | 端到端完整流程验证 |
